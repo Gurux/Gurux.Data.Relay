@@ -91,8 +91,7 @@ public sealed class GXDestinationTableService : IDestinationTableService
         GXRecordSource.Prepare(message);
         await using var connection = _connectionFactory.CreateConnection(database);
         await connection.OpenAsync(cancellationToken);
-        await using GXDbConnection guruxConnection = new(connection);
-        GXSchemaManager schemaManager = new(guruxConnection);
+        GXSchemaManager schemaManager = new(connection);
 
         if (!schemaManager.TableExist(destinationTable))
         {
@@ -129,8 +128,7 @@ public sealed class GXDestinationTableService : IDestinationTableService
 
         await using var connection = _connectionFactory.CreateConnection(database);
         await connection.OpenAsync(cancellationToken);
-        await using GXDbConnection guruxConnection = new(connection);
-        GXSchemaManager schemaManager = new(guruxConnection);
+        GXSchemaManager schemaManager = new(connection);
 
         if (!schemaManager.TableExist(destinationTable))
         {
