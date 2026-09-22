@@ -1,0 +1,26 @@
+.state-record {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 1px solid #ced4da;
+    border-radius: .25rem;
+}
+
+.state-record legend {
+    float: none;
+    width: auto;
+    padding: 0 .5rem;
+    font-size: 1rem;
+}
+
+.state-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+    gap: 1rem;
+}
+
+.state-fields label {
+    display: flex;
+    flex-direction: column;
+    gap: .25rem;
+    min-width: 0;
+}

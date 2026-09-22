@@ -1,0 +1,161 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@inject GXAdminApiClient Api
+
+<section class="panel">
+    <h2>Automatic column mappings</h2>
+    <p>Rules work in both directions and ignore letter case. Use one * on each side for a shared name, for example *HashKey ↔ HK_*.</p>
+    @if (_message != null)
+    {
+        <p role="status">@_message</p>
+    }
+    @if (_settings != null)
+    {
+        <fieldset disabled="@_saving">
+            <GXTable Id="@($"{_gxTableIdPrefix}-1")" @key="_version" TItem="GXColumnAlias" Context="rule" @bind-Active="_active" ShowAllData="true" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetItems">
+                <HeaderContent><th>Column name</th><th>Equivalent name</th></HeaderContent>
+                <ItemContent>
+                    <td><button type="button" class="btn btn-link" @onclick="() => Open(rule)">@rule.Source</button></td>
+                    <td>@rule.Target</td>
+                </ItemContent>
+                <MenuContent>
+                    <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="EditSelected" />
+                    <ContextMenuItem Text="Remove" Image="oi oi-trash" OnClick="RemoveSelectedAsync" />
+                </MenuContent>
+            </GXTable>
+            <button type="button" class="btn btn-secondary" @onclick="() => Open(null)">Add mapping</button>
+        </fieldset>
+    }
+</section>
+
+@if (_draft != null)
+{
+    <GXValidationDialog EditContext="_editContext" Title="@(_original == null ? "Add automatic column mapping" : "Edit automatic column mapping")" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
+        @if (_error != null)
+        {
+            <p class="alert alert-danger" role="alert">@_error</p>
+        }
+        <fieldset disabled="@_saving">
+            <label>Column name</label>
+            <InputText class="form-control" @bind-Value="_draft.Source" />
+            <ValidationMessage For="@(() => _draft.Source)" />
+            <label>Equivalent name</label>
+            <InputText class="form-control" @bind-Value="_draft.Target" />
+            <ValidationMessage For="@(() => _draft.Target)" />
+            <button type="button" class="btn btn-success" @onclick="ConfirmAsync">OK</button>
+            <button type="button" class="btn btn-secondary" @onclick="Cancel">Cancel</button>
+        </fieldset>
+    </GXValidationDialog>
+}
+
+@code {
+    private readonly string _gxTableIdPrefix = "columnaliassettingspanel-" + Guid.NewGuid().ToString("N");
+    private GXSettings? _settings;
+    private int _version;
+    private bool _saving;
+    private string? _message;
+    private string? _error;
+    private GXColumnAlias? _active, _original, _draft;
+    private EditContext? _editContext;
+    private ValidationMessageStore? _validation;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private ValueTask<ItemsProviderResult<GXColumnAlias>> GetItems(GXItemsProviderRequest request) =>
+        ValueTask.FromResult(new ItemsProviderResult<GXColumnAlias>(_settings!.ColumnAliases, _settings.ColumnAliases.Count));
+    private void Open(GXColumnAlias? rule)
+    {
+        if (_saving) return;
+        _original = rule;
+        _draft = new() { Source = rule?.Source ?? string.Empty, Target = rule?.Target ?? string.Empty };
+        _editContext = new(_draft);
+        _validation = new(_editContext);
+        _error = null;
+    }
+    private void EditSelected() { if (_active != null) Open(_active); }
+    private void Cancel() { if (!_saving) { _draft = _original = null; _error = null; } }
+    private async Task RemoveSelectedAsync()
+    {
+        if (_settings == null || _active == null || _saving || _draft != null) return;
+        var rules = _settings.ColumnAliases.Where(c => !ReferenceEquals(c, _active)).ToList();
+        await PersistAsync(rules);
+    }
+    private async Task ConfirmAsync()
+    {
+        if (_settings == null || _draft == null || _saving) return;
+        _validation!.Clear();
+        _draft.Source = _draft.Source.Trim();
+        _draft.Target = _draft.Target.Trim();
+        foreach (var field in new[] { nameof(GXColumnAlias.Source), nameof(GXColumnAlias.Target) })
+        {
+            string value = field == nameof(GXColumnAlias.Source) ? _draft.Source : _draft.Target;
+            if (string.IsNullOrWhiteSpace(value) || value.Count(c => c == '*') > 1)
+                _validation.Add(new FieldIdentifier(_draft, field), "Enter a name with at most one *.");
+        }
+        _editContext!.NotifyValidationStateChanged();
+        if (_editContext.GetValidationMessages().Any()) return;
+        var rules = _settings.ColumnAliases.ToList();
+        if (_original == null) rules.Add(_draft);
+        else
+        {
+            int index = rules.IndexOf(_original);
+            if (index < 0) { _error = "The mapping no longer exists. Reopen the dialog."; return; }
+            rules[index] = _draft;
+        }
+        if (await PersistAsync(rules)) Cancel();
+    }
+    private async Task LoadAsync()
+    {
+        try { _settings = await Api.GetSettingsAsync("datavault", default); ++_version; _message = null; }
+        catch (Exception ex) { _message = ex.Message; }
+    }
+    private async Task<bool> PersistAsync(List<GXColumnAlias> rules)
+    {
+        if (_settings == null || _saving) return false;
+        _saving = true;
+        try
+        {
+            var payload = System.Text.Json.JsonSerializer.Deserialize<GXSettings>(System.Text.Json.JsonSerializer.Serialize(_settings),
+                new System.Text.Json.JsonSerializerOptions { PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate })!;
+            payload.ColumnAliases = rules.Select(c => new GXColumnAlias { Source = c.Source, Target = c.Target }).ToList();
+            await Api.SaveSettingsAsync("datavault", payload, default);
+            _settings = payload;
+            _active = null;
+            ++_version;
+            _message = "Automatic column mappings saved.";
+            return true;
+        }
+        catch (Exception ex) { if (_draft != null) _error = ex.Message; else _message = ex.Message; return false; }
+        finally { _saving = false; }
+    }
+}
+

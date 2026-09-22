@@ -1,0 +1,166 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Enums
+@using Gurux.UI.Components.Table
+@using Gurux.UI.Components.ContextMenu
+@using Gurux.Data.Relay.Shared
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Gurux.Data.Relay.Shared.Enums
+
+@if (_action != CrudAction.None && _session != null)
+{
+    <ClientTransportEditor @key="_session" Session="_session" Action="_action"
+                           OnSaved="OnTransportSavedAsync" OnCancel="OnTransportCancelled" />
+}
+else
+{
+    <section class="panel">
+        <p>Transport changes are saved with Save table.</p>
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <p class="notice">@_message</p>
+        }
+
+        <MenuControl RightCorner="true">
+            <ChildContent>
+                <MenuItem Text="Add..." Image="oi oi-plus" Id="add" OnClick="ConfirmAddTransport" />
+            </ChildContent>
+        </MenuControl>
+        <h3>Configured transports</h3>
+        <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXTransport" Context="transport"
+                 @bind-Active="_activeTransport"
+                 @ref="_table"
+                 ShowAllUsers="false" ShowRemoved="false" ShowAllData="true"
+                 OnSearch="Updated" ItemsProvider="GetTransportItems">
+            <FilterContent>
+                <Fh Id="transport-type">
+                    <GXInputDropdown TValue="TransportType?" class="form-select" @bind-Value="_filterType" @bind-Value:after="Updated" Items="@_transportTypes.Prepend(null)">
+                        <Template Context="type">@(type?.ToString() ?? "All")</Template>
+                    </GXInputDropdown>
+                </Fh>
+                <Fh Id="transport-description">
+                    <Search class="form-control" placeholder="Filter by description..."
+                            id="transport-description" Immediate="true" LastValue="true"
+                            @bind-Value="_filterDescription" OnValueChanged="async (e) => await Updated()" />
+                </Fh>
+            </FilterContent>
+            <HeaderContent>
+                <Th Name="Type" Target="transport">Type</Th>
+                <Th Name="Description" Target="transport">Description</Th>
+            </HeaderContent>
+            <ItemContent>
+                <td>@transport.Type</td>
+                <td>
+                    <LinkButton Target="transport" OnClick="ConfirmEditTransport"
+                                Text="@(string.IsNullOrWhiteSpace(transport.Description) ? "(empty)" : transport.Description)" />
+                </td>
+            </ItemContent>
+            <MenuContent>
+                <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => ConfirmEditTransport(_activeTransport)" />
+                <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="() => ConfirmRemoveTransport(_activeTransport)" />
+            </MenuContent>
+        </GXTable>
+
+    </section>
+}
+
+@code {
+    private readonly string _gxTableIdPrefix = "clienttransportspanel-" + Guid.NewGuid().ToString("N");
+    [Parameter, EditorRequired] public GXTable Table { get; set; } = default!;
+    private GXTable? _previousTable;
+    private CrudAction _action;
+    private GXTransportEditSession? _session;
+    private GXTable<GXTransport>? _table;
+    private GXTransport? _activeTransport;
+    private readonly TransportType?[] _transportTypes = [TransportType.Tcp, TransportType.Mqtt];
+    private TransportType? _filterType = null;
+    private string? _filterDescription;
+    private string? _message;
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_previousTable, Table))
+        {
+            OnTransportCancelled();
+            _activeTransport = null;
+            _previousTable = Table;
+        }
+    }
+    private ValueTask<ItemsProviderResult<GXTransport>> GetTransportItems(GXItemsProviderRequest request)
+    {
+        GXTransport[] items = Table.Transports.Where(transport =>
+            (_filterType == null || transport.Type == _filterType) &&
+            (string.IsNullOrWhiteSpace(_filterDescription) || transport.Description?.Contains(_filterDescription, StringComparison.OrdinalIgnoreCase) == true)).ToArray();
+        if (_activeTransport != null && !items.Contains(_activeTransport)) _activeTransport = null;
+        return ValueTask.FromResult(new ItemsProviderResult<GXTransport>(items, items.Length));
+    }
+    private async Task Updated()
+    {
+        if (_table != null) await _table.RefreshDataAsync(true);
+    }
+    private void ConfirmAddTransport()
+    {
+        _session = new GXTransportEditSession(Table, null);
+        _action = CrudAction.Create;
+    }
+    private void ConfirmEditTransport(GXTransport? transport)
+    {
+        OpenTransport(transport, CrudAction.Update);
+        StateHasChanged();
+    }
+    private void ConfirmRemoveTransport(GXTransport? transport) => OpenTransport(transport, CrudAction.Delete);
+    private void OpenTransport(GXTransport? transport, CrudAction action)
+    {
+        int index = transport == null ? -1 : Table.Transports.IndexOf(transport);
+        if (index < 0) return;
+        _activeTransport = transport;
+        _session = new GXTransportEditSession(Table, index);
+        _action = action;
+    }
+    private Task OnTransportSavedAsync(GXTable table)
+    {
+        Table.Transports = table.Transports;
+        _activeTransport = null;
+        OnTransportCancelled();
+        _message = "Transport changes applied. Save table to persist them.";
+        return Task.CompletedTask;
+    }
+    private void OnTransportCancelled()
+    {
+        _session = null;
+        _action = CrudAction.None;
+        _table = null;
+    }
+}
+

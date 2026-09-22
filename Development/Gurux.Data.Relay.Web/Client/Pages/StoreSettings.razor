@@ -1,0 +1,101 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/store-settings"
+@page "/settings"
+
+<PageTitle>Settings</PageTitle>
+@switch (_activeTab)
+{
+    case 0:
+        <HelpContext Topic="configuration-database" />
+        break;
+    case 1:
+        <HelpContext Topic="import-and-export-all-settings" />
+        break;
+    case 2:
+        <HelpContext Topic="settings--automatic-column-mappings" />
+        break;
+    case 3:
+        <HelpContext Topic="client-cors" />
+        break;
+    case 4:
+        <HelpContext Topic="server-cors" />
+        break;
+    case 5:
+        <HelpContext Topic="data-vault-cors" />
+        break;
+    case 6:
+        <HelpContext Topic="configuration-database" />
+        break;
+}
+<div class="nav nav-tabs mb-3" role="tablist" aria-label="Settings sections">
+    @for (int index = 0; index < _tabs.Length; ++index)
+    {
+        int tab = index;
+        <button type="button" id="settings-tab-@tab" class="nav-link @(_activeTab == tab ? "active" : "")"
+                role="tab" aria-selected="@(_activeTab == tab ? "true" : "false")" aria-controls="settings-panel-@tab"
+                @onclick="() => _activeTab = tab">
+            @_tabs[tab]
+        </button>
+    }
+</div>
+<div id="settings-panel-0" role="tabpanel" aria-labelledby="settings-tab-0" hidden="@(_activeTab != 0)">
+    <StoreSettingsPanel />
+</div>
+<div id="settings-panel-1" role="tabpanel" aria-labelledby="settings-tab-1" hidden="@(_activeTab != 1)">
+    <SettingsArchivePanel OnImported="@(() => ++_version)" />
+</div>
+<div @key="_version">
+    <div id="settings-panel-2" role="tabpanel" aria-labelledby="settings-tab-2" hidden="@(_activeTab != 2)">
+        <ColumnAliasSettingsPanel />
+    </div>
+    <div id="settings-panel-3" role="tabpanel" aria-labelledby="settings-tab-3" hidden="@(_activeTab != 3)">
+        <CorsSettingsPanel Mode="client" Title="Client" />
+    </div>
+    <div id="settings-panel-4" role="tabpanel" aria-labelledby="settings-tab-4" hidden="@(_activeTab != 4)">
+        <CorsSettingsPanel Mode="server" Title="Server" />
+    </div>
+    <div id="settings-panel-5" role="tabpanel" aria-labelledby="settings-tab-5" hidden="@(_activeTab != 5)">
+        <CorsSettingsPanel Mode="datavault" Title="Data Vault" />
+    </div>
+    <div id="settings-panel-6" role="tabpanel" aria-labelledby="settings-tab-6" hidden="@(_activeTab != 6)">
+        <DataSourceSettingsPanel />
+    </div>
+</div>
+
+@code {
+    private int _version, _activeTab;
+    private readonly string[] _tabs = ["Configuration database", "Import / Export", "Automatic column mappings", "Client CORS", "Server CORS", "Data Vault CORS", "Data sources"];
+}
+

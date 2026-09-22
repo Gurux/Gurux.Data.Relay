@@ -1,0 +1,19 @@
+# The build context is this repository's root directory.
+**
+!Development/
+!Development/**
+**/bin
+**/obj
+**/.git
+**/.svn
+**/.vs
+**/Tests
+**/artifacts
+**/*.log
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.pfx
+**/*.pem
+**/gurux.data.relay.json
+**/appsettings.Development.json

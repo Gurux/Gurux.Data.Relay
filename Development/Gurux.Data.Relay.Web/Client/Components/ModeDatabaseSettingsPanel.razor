@@ -1,0 +1,112 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@inject GXAdminApiClient Api
+
+<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _dirty || _busy)" OnChanged="LoadAsync">
+    <section class="panel">
+        <h2>@Title</h2>
+        <p>Select databases from the shared <a href="databases">Databases</a> catalog. Connection settings are managed there.</p>
+        @if (_message != null) { <p role="status">@_message</p> }
+        @foreach (var database in _catalog)
+        {
+            <div @key="database.Id">
+                <label><input type="checkbox" checked="@_selected.Contains(database.Id)" disabled="@_busy"
+                    @onchange="e => Select(database.Id, e.Value is true)" />
+                    @(string.IsNullOrWhiteSpace(database.Description) ? database.Id.ToString() : database.Description) (@database.Type)
+                </label>
+            </div>
+        }
+        <div class="actions-row">
+            <button class="btn btn-primary" disabled="@(!_loaded || !_dirty || _busy)" @onclick="SaveAsync">Save selection</button>
+            <button class="btn btn-secondary" disabled="@_busy" @onclick="LoadAsync">Reload</button>
+        </div>
+    </section>
+</GXLiveView>
+
+@code {
+    [Inject] public IGXTopMenu? TopMenu { get; set; }
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && TopMenu is not null) { TopMenu.Clear(); TopMenu.EditContext = null; }
+    }
+    [Parameter] public string Mode { get; set; } = string.Empty;
+    [Parameter] public string Title { get; set; } = "Databases";
+    private List<GXDatabase> _catalog = [];
+    private GXSettings? _settings;
+    private HashSet<Guid> _selected = [];
+    private bool _busy, _dirty, _loaded;
+    private string? _message;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        if (_busy) return;
+        _loaded = false;
+        try
+        {
+            _catalog = await Api.GetDatabaseCatalogAsync(default);
+            _settings = await Api.GetSettingsAsync(Mode, default);
+            _selected = _settings.Databases.Select(d => d.Id).ToHashSet();
+            _dirty = false;
+            _loaded = true;
+            _message = null;
+        }
+        catch (Exception ex) { _message = ex.Message; }
+    }
+    private void Select(Guid id, bool selected)
+    {
+        if (selected) _selected.Add(id); else _selected.Remove(id);
+        _dirty = true;
+    }
+    private async Task SaveAsync()
+    {
+        if (_busy || !_loaded || _settings is null) return;
+        _busy = true;
+        try
+        {
+            var removed = _settings.Databases.Where(d => !_selected.Contains(d.Id)).ToList();
+            if (removed.Any(d => d.Tables?.Count > 0 || d.Mappings?.Count > 0 ||
+                _settings.Transports.Any(t => t.Tables.Any(r => r.DatabaseId == d.Id))))
+                throw new InvalidOperationException("Remove this mode's table configurations, mappings and transport routes before removing its database selection.");
+            var databases = _settings.Databases.Where(d => _selected.Contains(d.Id)).ToList();
+            databases.AddRange(_catalog.Where(d => _selected.Contains(d.Id) && !databases.Any(existing => existing.Id == d.Id)));
+            _settings.ConcurrencyStamp = await Api.SaveDatabasesAsync(Mode, databases, default, _settings.ConcurrencyStamp);
+            _settings.Databases = databases;
+            _dirty = false;
+            _message = "Database selection saved.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+}

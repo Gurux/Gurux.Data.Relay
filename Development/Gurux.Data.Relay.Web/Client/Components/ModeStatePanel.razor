@@ -1,0 +1,371 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Configuration
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Shared.Enums
+
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="@Mode" Kinds="@(GXRelayChangeKind.Configuration | GXRelayChangeKind.State)" IsEditing="@(() => _resetRequest != null || _choosingResetTable)" OnChanged="LoadAsync">
+
+    <section class="panel">
+        <h2>@Title</h2>
+        @if (_choosingResetTable)
+        {
+            <GXValidationDialog Model="@this" Title="Reset transfer checkpoint" OkButtonTitle="" CancelButtonTitle="" OnCancel="CancelReset">
+                <p>Select the table whose transfer checkpoint you want to reset.</p>
+                @foreach (var table in VisibleTables.Where(table => !string.IsNullOrEmpty(table.LastCheckpointValue)))
+                {
+                    <div><button type="button" class="btn btn-link" @onclick="() => BeginReset(table)">@DatabaseLabel(table.DatabaseIndex): @table.Name</button></div>
+                }
+                @if (!VisibleTables.Any(table => !string.IsNullOrEmpty(table.LastCheckpointValue)))
+                {
+                    <p>No transfer checkpoints available.</p>
+                }
+                <button type="button" class="btn btn-secondary" @onclick="CancelReset">Cancel</button>
+            </GXValidationDialog>
+        }
+        @if (_resetRequest is not null)
+        {
+            <GXValidationDialog Model="@this" Title="Reset transfer checkpoint" OkButtonTitle="" CancelButtonTitle="" OnCancel="CancelReset">
+                <p>Reset the transfer checkpoint for <strong>@_resetRequest.StateTableName</strong>?</p>
+                <p>The next Run will send the table data again and may create duplicate rows in the destination. Other transfer history will be preserved.</p>
+                <button class="btn btn-danger" disabled="@_resetting" @onclick="ConfirmResetAsync">Reset transfer checkpoint</button>
+                <button class="btn btn-secondary" disabled="@_resetting" @onclick="CancelReset">Cancel</button>
+            </GXValidationDialog>
+        }
+        @if (_notice is not null)
+        {
+            <p role="status">@_notice</p>
+        }
+        <div class="actions-row">
+            @if (Mode == "client")
+            {
+                <label>
+                    Database
+                    <DropdownSearch TValue="int?" class="form-control" ShowItemsWhenEmpty="true" @bind-Value="_databaseIndex" Items="@(Enumerable.Range(0, _databases.Count).Select(index => (int?)index).Prepend(null))" Formatter="FormatDatabaseOption" placeholder="All databases"><Template Context="option">@(FormatDatabaseOption(option))</Template></DropdownSearch>
+                </label>
+            }
+        </div>
+        @if (_error != null)
+        {
+            <p class="notice" role="alert">@_error</p>
+        }
+        @if (_state != null)
+        {
+            @if (Mode == "datavault")
+            {
+                <div class="table-responsive">
+                    <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXDataVaultTableMapping" Context="mapping" @ref="_vaultTable"
+                             ShowAllData="false" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetVaultStateItems">
+                        <HeaderContent><th>Database</th><th>Type</th><th>Source</th><th>Target</th><th>Status</th><th>Last started</th><th>Last completed</th><th>Last successful run</th><th>Rows</th><th>Duration</th><th>Error</th></HeaderContent>
+                        <FilterContent>
+                            <Fh><Search placeholder="Search Database..." @bind-Value="_vaultDatabaseFilter" OnValueChanged="@(async (e) => await VaultFiltersChanged())" /></Fh>
+                            <Fh>
+                                <GXInputDropdown Items="VaultObjectTypes" @bind-Value="_vaultTypeFilter" @bind-Value:after="VaultFiltersChanged">
+                                    <Template Context="type">@(type?.ToString() ?? "\u00a0")</Template>
+                                </GXInputDropdown>
+                            </Fh>
+                            <Fh><Search placeholder="Search Source..." @bind-Value="_vaultSourceFilter" OnValueChanged="@(async (e) => await VaultFiltersChanged())" /></Fh>
+                            <Fh><Search placeholder="Search Target..." @bind-Value="_vaultTargetFilter" OnValueChanged="@(async (e) => await VaultFiltersChanged())" /></Fh>
+                            <Fh><GXInputDropdown Items="VaultStatuses" @bind-Value="_vaultStatusFilter" @bind-Value:after="VaultFiltersChanged" /></Fh>
+                            <Fh /><Fh /><Fh /><Fh /><Fh />
+                            <Fh><Search placeholder="Search Error..." @bind-Value="_vaultErrorFilter" OnValueChanged="@(async (e) => await VaultFiltersChanged())" /></Fh>
+                        </FilterContent>
+                        <ItemContent>
+                            @{
+                                var state = VaultState(mapping);
+                            }
+                            <td>@VaultDatabaseLabel(mapping)</td>
+                            <td>@mapping.ObjectType</td><td>@mapping.SourceTable.Name</td><td>@mapping.TargetTable.Name</td>
+                            <td>@(state?.Status ?? "Never run")</td>
+                            <td>@FormatValue(state?.LastStarted)</td><td>@FormatValue(state?.LastCompleted)</td>
+                            <td>@FormatValue(state?.LastSuccessfulRun)</td><td>@FormatValue(state?.RowCount)</td>
+                            <td>@FormatValue(state?.DurationMs is long duration ? TimeSpan.FromMilliseconds(duration) : null)</td>
+                            <td>@FormatValue(state?.Error)</td>
+                        </ItemContent>
+                    </GXTable>                    @if (_vaultMappings.Count == 0) {
+                    <p>No mappings available.</p>
+                }
+            </div>
+        }
+        @if (_state.Tables is { } itemsTables)
+        {
+            <h3>Tables</h3>
+            @if (!VisibleTables.Any())
+            {
+                <p>No tables available.</p>
+            }
+            @foreach (var item in VisibleTables)
+            {
+                <fieldset class="state-record">
+                    <legend>Tables</legend>
+                    <div class="state-fields">
+                        <label>Database<input class="form-control" type="text" value="@DatabaseLabel(item.DatabaseIndex)" readonly /></label>
+                        <label>Name<input class="form-control" type="text" value="@FormatValue(item.Name)" readonly /></label>
+                        <label>Last Message Id<input class="form-control" type="text" value="@FormatValue(item.LastMessageId)" readonly /></label>
+                        <label>Last Successful Transfer<input class="form-control" type="text" value="@FormatValue(item.LastSuccessfulTransfer)" readonly /></label>
+                        <label>Last Successful Notification<input class="form-control" type="text" value="@FormatValue(item.LastSuccessfulNotification)" readonly /></label>
+                        <label>Last Test Server Connection Message Id<input class="form-control" type="text" value="@FormatValue(item.LastPingMessageId)" readonly /></label>
+                        <label>Last Test Server Connection At<input class="form-control" type="text" value="@FormatValue(item.LastPingAt)" readonly /></label>
+                        <label>Last Row Count<input class="form-control" type="text" value="@FormatValue(item.LastRowCount)" readonly /></label>
+                        <label>Last Checkpoint Value<input class="form-control" type="text" value="@FormatValue(item.LastCheckpointValue)" readonly /></label>
+                        <label>Last Attempted Transfer<input class="form-control" type="text" value="@FormatValue(item.LastAttemptedTransfer)" readonly /></label>
+                        <label>Last Run Status<input class="form-control" type="text" value="@FormatValue(item.LastRunStatus)" readonly /></label>
+                        <label>Last Failure<input class="form-control" type="text" value="@FormatValue(item.LastFailure)" readonly /></label>
+                        <label>Consecutive Failures<input class="form-control" type="text" value="@FormatValue(item.ConsecutiveFailures)" readonly /></label>
+                        <label>Skipped Run Count<input class="form-control" type="text" value="@FormatValue(item.SkippedRunCount)" readonly /></label>
+                        <label>Last Sent Message Count<input class="form-control" type="text" value="@FormatValue(item.LastSentMessageCount)" readonly /></label>
+                        <label>Last Run Duration<input class="form-control" type="text" value="@FormatValue(TimeSpan.FromMilliseconds(item.LastRunDurationMs.GetValueOrDefault(0)))" readonly /></label>
+                    </div>
+                </fieldset>
+            }
+        }
+        @if (_state.TableMappings is { } itemsTableMappings)
+        {
+            <h3>Table mappings</h3>
+            @if (itemsTableMappings.Count == 0)
+            {
+                <p>No table mappings available.</p>
+            }
+            @foreach (var item in itemsTableMappings)
+            {
+                <fieldset class="state-record">
+                    <legend>Table mappings</legend>
+                    <div class="state-fields">
+                        <label>Source<input class="form-control" type="text" value="@FormatValue(item.Source)" readonly /></label>
+                        <label>Destination<input class="form-control" type="text" value="@FormatValue(item.Destination)" readonly /></label>
+                    </div>
+                </fieldset>
+            }
+        }
+        @if (_state.ProcessedMessages is { } itemsProcessedMessages)
+        {
+            <h3>Processed messages</h3>
+            @if (itemsProcessedMessages.Count == 0)
+            {
+                <p>No processed messages available.</p>
+            }
+            @foreach (var item in itemsProcessedMessages)
+            {
+                <fieldset class="state-record">
+                    <legend>Processed messages</legend>
+                    <div class="state-fields">
+                        <label>Message Id<input class="form-control" type="text" value="@FormatValue(item.MessageId)" readonly /></label>
+                        <label>Processed At<input class="form-control" type="text" value="@FormatValue(item.ProcessedAt)" readonly /></label>
+                        <label>Status<input class="form-control" type="text" value="@FormatValue(item.Status)" readonly /></label>
+                        <label>Error<input class="form-control" type="text" value="@FormatValue(item.Error)" readonly /></label>
+                    </div>
+                </fieldset>
+            }
+        }
+                }
+    </section>
+
+
+</GXLiveView>
+@code {
+    private readonly string _gxTableIdPrefix = "modestatepanel-" + Guid.NewGuid().ToString("N");
+    [Inject] public IGXTopMenu TopMenu { get; set; } = default!;
+    private bool _choosingResetTable;
+    private string? _menuMode;
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (_menuMode == Mode) return;
+        _menuMode = Mode;
+        if (Mode == "client")
+        {
+            TopMenu.Clear();
+            TopMenu.EditContext = null;
+            TopMenu.AddMenuItems([
+                new GXMenuItem("Reset transfer checkpoint", null,
+                    EventCallback.Factory.Create(this, OpenResetTableSelection))
+            ]);
+        }
+    }
+    private async Task OpenResetTableSelection()
+    {
+        if (Mode != "client" || _resetting || _resetRequest != null || _loading) return;
+        await LoadAsync();
+        _choosingResetTable = _error == null;
+    }
+
+    private string FormatDatabaseOption(int? index) => index.HasValue ? DatabaseLabel(index.Value) : "All databases";
+
+
+    [Parameter, EditorRequired]
+    public string Mode { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    private GXState? _state;
+    private IReadOnlyList<GXDataVaultTableMapping> _vaultMappings = [];
+    private GXTable<GXDataVaultTableMapping>? _vaultTable;
+    private string? _vaultDatabaseFilter, _vaultSourceFilter, _vaultTargetFilter, _vaultErrorFilter;
+    private string _vaultStatusFilter = "";
+    private DataVaultObjectType? _vaultTypeFilter;
+    private static readonly DataVaultObjectType?[] VaultObjectTypes =
+        Enum.GetValues<DataVaultObjectType>().Select(t => (DataVaultObjectType?)t).Prepend(null).ToArray();
+    private static readonly string[] VaultStatuses = ["", "Never run", "Running", "Succeeded", "Failed", "Cancelled"];
+    private GXDataVaultMappingState? VaultState(GXDataVaultTableMapping mapping) =>
+        _state?.DataVaultMappings?.FirstOrDefault(s => s.Id == mapping.Id);
+    private string VaultDatabaseLabel(GXDataVaultTableMapping mapping)
+    {
+        var database = _databases.FirstOrDefault(d => d.Id == mapping.Database);
+        return database == null ? mapping.Database.ToString() : database.Description ?? database.Type.ToString();
+    }
+    private static bool MatchesVaultFilter(string? value, string? filter) =>
+        string.IsNullOrWhiteSpace(filter) || value?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true;
+    private ValueTask<Microsoft.AspNetCore.Components.Web.Virtualization.ItemsProviderResult<GXDataVaultTableMapping>> GetVaultStateItems(GXItemsProviderRequest request)
+    {
+        var rows = _vaultMappings.Where(m => (_vaultTypeFilter == null || m.ObjectType == _vaultTypeFilter) &&
+            MatchesVaultFilter(VaultDatabaseLabel(m), _vaultDatabaseFilter) &&
+            MatchesVaultFilter(m.SourceTable.Name, _vaultSourceFilter) && MatchesVaultFilter(m.TargetTable.Name, _vaultTargetFilter) &&
+            (string.IsNullOrEmpty(_vaultStatusFilter) || (VaultState(m)?.Status ?? "Never run") == _vaultStatusFilter) &&
+            MatchesVaultFilter(VaultState(m)?.Error, _vaultErrorFilter)).ToList();
+        return ValueTask.FromResult(new Microsoft.AspNetCore.Components.Web.Virtualization.ItemsProviderResult<GXDataVaultTableMapping>(
+            request.Count > 0 ? rows.Skip(request.StartIndex).Take(request.Count) : rows, rows.Count));
+    }
+    private async Task VaultFiltersChanged()
+    {
+        if (_vaultTable != null) { _vaultTable.CurrentPage = 0; await _vaultTable.RefreshDataAsync(true); }
+    }
+    private GXResetCheckpointRequest? _resetRequest;
+    private bool _resetting;
+    private string? _notice;
+
+    private void BeginReset(GXClientTableState table)
+    {
+        if (Mode != "client" || _resetRequest is not null || string.IsNullOrEmpty(table.LastCheckpointValue)) return;
+        if (table.DatabaseIndex is not int index || index < 0 || index >= _databases.Count)
+        {
+            _error = "Reload the state page to resolve the selected database.";
+            return;
+        }
+        _error = null;
+        _notice = null;
+        _choosingResetTable = false;
+        _resetRequest = new() { DatabaseId = _databases[index].Id, StateTableName = table.Name, ConcurrencyStamp = table.ConcurrencyStamp };
+    }
+
+    private void CancelReset()
+    {
+        if (!_resetting)
+        {
+            _resetRequest = null;
+            _choosingResetTable = false;
+        }
+    }
+
+    private async Task ConfirmResetAsync()
+    {
+        if (_resetting || _resetRequest is null) return;
+        _resetting = true;
+        try
+        {
+            await Api.ResetClientTableCheckpointAsync(_resetRequest, CancellationToken.None);
+            _resetRequest = null;
+            _notice = "Transfer checkpoint reset. The next Run will send the table data again.";
+            await LoadAsync();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            _resetRequest = null;
+            await LoadAsync();
+            _choosingResetTable = _error == null;
+            _notice = "The table state changed. The latest state has been loaded. Select the table and confirm the reset again.";
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _resetting = false; }
+    }
+    private IReadOnlyList<GXDatabase> _databases = [];
+    private int? _databaseIndex;
+    private IEnumerable<GXClientTableState> VisibleTables =>
+        (_state?.Tables ?? []).Where(item => _databaseIndex == null || item.DatabaseIndex == _databaseIndex);
+
+    private string DatabaseLabel(int? index) => index is int value && value >= 0 && value < _databases.Count
+        ? $"{value + 1}: {_databases[value].Description ?? _databases[value].Type.ToString()}"
+        : "Unknown";
+    private bool _loading;
+    private string? _error;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            if (Mode is "client" or "datavault")
+            {
+                _databases = await Api.GetDatabasesAsync(Mode, CancellationToken.None);
+                if (_databaseIndex >= _databases.Count)
+                {
+                    _databaseIndex = null;
+                }
+            }
+            _state = await Api.GetStateAsync(Mode, CancellationToken.None);
+            if (Mode == "datavault")
+            {
+                _vaultMappings = await Api.GetDataVaultMappingsAsync(CancellationToken.None);
+                if (_vaultTable != null)
+                {
+                    await _vaultTable.RefreshDataAsync(true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string FormatValue(object? value) => value switch
+    {
+        null => "—",
+        DateTimeOffset timestamp => timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+        string text when string.IsNullOrEmpty(text) => "—",
+        _ => value.ToString() ?? "—"
+    };
+}
+
+
+
+

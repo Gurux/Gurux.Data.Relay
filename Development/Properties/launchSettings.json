@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Gurux.Data.Relay": {
+      "commandName": "Project",
+      "commandLineArgs": "server --update"
+    }
+  }
+}

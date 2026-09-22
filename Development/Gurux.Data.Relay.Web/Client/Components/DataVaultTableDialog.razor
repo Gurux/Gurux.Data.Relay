@@ -1,0 +1,435 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Configuration
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Shared.Enums
+
+@inject GXAdminApiClient Api
+<GXValidationDialog Model="@this" Title="@($"Add {_type}")" HelpTopic="@HelpTopic" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="alert alert-danger" role="alert">@_error</div>
+    }
+    <fieldset disabled="@_busy">
+        <label>Source table</label>
+        <DropdownSearch Items="_tables" @bind-Value="_source" @bind-Value:after="LoadColumnsAsync" ShowItemsWhenEmpty="true" class="form-control" />
+        <ValidationMessage For="@(() => _source)" />
+        <label class="d-block">
+            <input type="checkbox" @bind="_createNewTable" @bind:after="ChangeTableModeAsync" />
+            <ValidationMessage For="@(() => _createNewTable)" /> Create new table
+        </label>
+        @if (_createNewTable)
+        {
+            <label>Target table name</label>
+            <InputText @bind-Value="_target" @bind-Value:after="SelectReferenceColumns" class="form-control" />
+            <ValidationMessage For="@(() => _target)" />
+        }
+        else
+        {
+            <label>Target table</label>
+            <DropdownSearch TValue="string" Items="@_tables.Where(t => !string.Equals(t, _source, StringComparison.OrdinalIgnoreCase))"
+                            @bind-Value="_target" @bind-Value:after="LoadTargetColumnsAsync" ShowItemsWhenEmpty="true" class="form-control" />
+            <ValidationMessage For="@(() => _target)" />
+        }
+        @if (_type == DataVaultObjectType.Hub)
+        {
+            <p>Select a Business Key that identifies the business entity, for example a user name.</p>
+            <label>Business Key</label>
+            <DropdownSearch Items="@_columns.Select(column => column.Name)" @bind-Value="_businessKey" @bind-Value:after="ClearTargetSelections"
+                            ShowItemsWhenEmpty="true" class="form-control" />
+            <ValidationMessage For="@(() => _businessKey)" />
+            @if (_createNewTable && !string.IsNullOrEmpty(_businessKey))
+            {
+                <p>Hub columns: @(_businessKey + "_BK"), @("HK_" + _businessKey), LOAD_DATE and RECORD_SOURCE.</p>
+            }
+        }
+        else
+        {
+            @if (_type == DataVaultObjectType.Link || _type == DataVaultObjectType.Satellite)
+            {
+                <p>@(_type == DataVaultObjectType.Link ? "Select at least two Hub references and their source keys. Use distinct role names, for example HK_Customer and HK_Seller." : "Select the parent Hub or Link and its source key. Select descriptive columns below; HASH_DIFF tracks their changes.")</p>
+                @foreach (var parent in _parents)
+                {
+                    <div @key="parent" class="mb-3">
+                        <label>Parent table</label>
+                        <DropdownSearch Items="ParentTables" @bind-Value="parent.Table" @bind-Value:after="() => SuggestParentAsync(parent)" ShowItemsWhenEmpty="true" class="form-control" />
+                        <ValidationMessage For="@(() => parent.Table)" />
+                        <label>Source key column</label>
+                        <DropdownSearch Items="@_columns.Select(c => c.Name)" @bind-Value="parent.SourceColumn" ShowItemsWhenEmpty="true" class="form-control" />
+                        <ValidationMessage For="@(() => parent.SourceColumn)" />
+                        @if (_createNewTable)
+                        {
+                            <label>Target hash column (HK_role)</label>
+                            <InputText @bind-Value="parent.Column" class="form-control" />
+                            <ValidationMessage For="@(() => parent.Column)" />
+                        }
+                        @if (_type == DataVaultObjectType.Link && _parents.Count > 2)
+                        {
+                            <button type="button" class="btn btn-secondary" @onclick="() => _parents.Remove(parent)">Remove reference</button>
+                        }
+                    </div>
+                }
+                @if (_type == DataVaultObjectType.Link)
+                {
+                    <button type="button" class="btn btn-secondary" @onclick="() => _parents.Add(new())">Add Hub reference</button>
+                }
+            }
+            @if (_type == DataVaultObjectType.Reference)
+            {
+                <p>Select the reference code (primary key) and descriptive columns. This reference table does not retain history.</p>
+                <label>Code column</label>
+                <DropdownSearch Items="@_columns.Select(c => c.Name)" @bind-Value="_businessKey" @bind-Value:after="ClearTargetSelections" ShowItemsWhenEmpty="true" class="form-control" />
+                <ValidationMessage For="@(() => _businessKey)" />
+            }
+            @if (_type != DataVaultObjectType.Link)
+            {
+                <p>Select descriptive source columns to map.</p>
+                @foreach (var column in _columns.Where(c => _type != DataVaultObjectType.Reference ||
+                        c.Name != _businessKey && !new[] { "LOAD_DATE", "RECORD_SOURCE" }.Contains(NormalizeColumnAlias(c.Name), StringComparer.OrdinalIgnoreCase)))
+                {
+                    <label class="d-block">
+                        <input type="checkbox" checked="@_selectedColumns.Contains(column.Name)"
+                               @onchange="e => ToggleColumn(column.Name, e.Value is true)" /> @column.Name (@column.DbType)
+                    </label>
+                }
+            }
+            @if (_createNewTable)
+            {
+                <p>Columns to create: @string.Join(", ", PreviewColumns)</p>
+            }
+            <p>@(_type == DataVaultObjectType.Link ? "Primary key: the Link hash key." : _type == DataVaultObjectType.Satellite ? "Primary key: parent hash key + LOAD_DATE." : "Primary key: the selected code.")</p>
+        }
+        @if (!_createNewTable && _targetColumns.Count != 0)
+        {
+            <h3>Target columns</h3>
+            @foreach (string column in ExpectedColumnNames.Where(c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                <div @key="column" class="mb-2">
+                    <label>Target column for @column</label>
+                    <DropdownSearch @key="(_targetVersion, column)" TValue="string" Items="WritableTargetColumns" Value="@SelectedTarget(column)"
+                                    ValueExpression="@(() => _targetColumnNames[column])"
+                                    ValueChanged="@(value => _targetColumnNames[column] = value ?? string.Empty)" ShowItemsWhenEmpty="true" class="form-control" />
+                    <ValidationMessage For="@(() => _targetColumnNames[column])" />
+                </div>
+            }
+        }
+        @if (_createNewTable && !MappingMode)
+        {
+            <label class="d-block">
+                <input type="checkbox" @bind="_addMapping" />
+                <ValidationMessage For="@(() => _addMapping)" /> Add mapping
+            </label>
+        }
+        <button type="button" class="btn btn-success" disabled="@(!CanCreate)" @onclick="CreateAsync">@(_createNewTable ? "Create table" : "Save mapping")</button>
+        <button type="button" class="btn btn-secondary" @onclick="Cancel">Cancel</button>
+    </fieldset>
+</GXValidationDialog>
+@code {
+    private string HelpTopic => _type switch
+    {
+        DataVaultObjectType.Hub => "add-hub",
+        DataVaultObjectType.Link => "add-link",
+        DataVaultObjectType.Satellite => "add-satellite",
+        DataVaultObjectType.Reference => "add-reference",
+        _ => "tables-and-mappings"
+    };
+
+    [Parameter, EditorRequired] public GXDatabase Database { get; set; } = default!;
+    [Parameter] public string? SourceTable { get; set; }
+    [Parameter] public DataVaultObjectType ObjectType { get; set; }
+    [Parameter] public bool MappingMode { get; set; }
+    [Parameter] public EventCallback<GXCreateVaultTableResult> OnCompleted { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private GXDatabase _database => Database;
+    private IReadOnlyList<string> _tables = [];
+    private IReadOnlyList<GXColumnSchema> _columns = [];
+    private IReadOnlyList<GXColumnSchema> _targetColumns = [];
+    private bool _createNewTable = true;
+    private readonly Dictionary<string, string> _targetColumnNames = new(StringComparer.OrdinalIgnoreCase);
+    private IEnumerable<string> WritableTargetColumns => _targetColumns.Where(c => !c.IsGenerated && !c.IsComputed && !c.IsIdentity && !c.IsAutoIncrement).Select(c => c.Name);
+    private readonly HashSet<string> _selectedColumns = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<GXVaultParentSelection> _parents = [];
+    private IReadOnlyList<GXDataVaultTableMapping> _knownMappings = [];
+    private IEnumerable<string> ParentTables => _tables.Where(t => _knownMappings.Any(m => m.Database == Database.Id &&
+            string.Equals(m.TargetTable.Name, t, StringComparison.OrdinalIgnoreCase) &&
+            (m.ObjectType == DataVaultObjectType.Hub || _type == DataVaultObjectType.Satellite && m.ObjectType == DataVaultObjectType.Link)) ||
+        t.Split('.').Last().StartsWith("HUB_", StringComparison.OrdinalIgnoreCase) ||
+        (_type == DataVaultObjectType.Satellite && (t.Split('.').Last().StartsWith("LNK_", StringComparison.OrdinalIgnoreCase) || t.Split('.').Last().StartsWith("LINK_", StringComparison.OrdinalIgnoreCase))));
+    private List<string> PayloadColumns => _selectedColumns.Where(c => _type != DataVaultObjectType.Reference || c != _businessKey).ToList();
+    private bool CanCreate => !_busy && !string.IsNullOrWhiteSpace(_target) &&
+        (_createNewTable || _tables.Contains(_target, StringComparer.OrdinalIgnoreCase) && _targetColumns.Count != 0 &&
+            ExpectedColumnNames.All(c => WritableTargetColumns.Contains(SelectedTarget(c), StringComparer.OrdinalIgnoreCase)) &&
+            ExpectedColumnNames.Select(SelectedTarget).Distinct(StringComparer.OrdinalIgnoreCase).Count() == ExpectedColumnNames.Count()) && (_type switch
+            {
+                DataVaultObjectType.Hub => _columns.Any(c => c.Name == _businessKey),
+                DataVaultObjectType.Reference => _columns.Any(c => c.Name == _businessKey) && PayloadColumns.Count > 0,
+                _ => _parents.Count >= (_type == DataVaultObjectType.Link ? 2 : 1) &&
+                    _parents.All(p => ParentTables.Contains(p.Table) && _columns.Any(c => c.Name == p.SourceColumn) && !string.IsNullOrWhiteSpace(p.Column)) &&
+                    (_type == DataVaultObjectType.Link || PayloadColumns.Count > 0)
+            });
+    private IEnumerable<string> ExpectedColumnNames => _type == DataVaultObjectType.Hub
+        ? new[] { _businessKey + "_BK", "HK_" + _businessKey, "LOAD_DATE", "RECORD_SOURCE" }
+        : PreviewColumns;
+    private IEnumerable<string> PreviewColumns
+    {
+        get
+        {
+            if (_type == DataVaultObjectType.Link)
+                yield return "HK_" + (_target?.StartsWith("LNK_", StringComparison.OrdinalIgnoreCase) == true ? _target[4..] : _target);
+            foreach (var parent in _parents) yield return parent.Column;
+            if (_type == DataVaultObjectType.Satellite) yield return "HASH_DIFF";
+            if (_type == DataVaultObjectType.Reference && _businessKey != null) yield return _businessKey;
+            yield return "LOAD_DATE";
+            yield return "RECORD_SOURCE";
+            foreach (var column in PayloadColumns) yield return column;
+        }
+    }
+    private string? _businessKey;
+    private List<GXColumnAlias> _columnAliases = GXColumnAlias.Defaults();
+    private string? _source, _target, _error;
+    private DataVaultObjectType _type;
+    private bool _addMapping = true;
+    private bool _busy;
+    protected override async Task OnInitializedAsync()
+    {
+        _type = ObjectType;
+        _createNewTable = !MappingMode;
+        _source = SourceTable;
+        string prefix = _type switch { DataVaultObjectType.Hub => "HUB_", DataVaultObjectType.Link => "LNK_", DataVaultObjectType.Satellite => "SAT_", _ => "REF_" };
+        string name = _source?.Split('.').Last() ?? "";
+        if (name.StartsWith("STG_", StringComparison.OrdinalIgnoreCase)) name = name[4..];
+        _target = prefix + name;
+        try
+        {
+            _columnAliases = (await Api.GetSettingsAsync("datavault", default)).ColumnAliases;
+            _tables = await Api.GetTablesAsync(Database, default);
+            if (_type is DataVaultObjectType.Link or DataVaultObjectType.Satellite)
+                _knownMappings = await Api.GetDataVaultMappingsAsync(default);
+            if (!_createNewTable && !_tables.Contains(_target, StringComparer.OrdinalIgnoreCase)) _target = null;
+            if (_source != null && !_tables.Contains(_source, StringComparer.OrdinalIgnoreCase)) _source = null;
+            await LoadColumnsAsync();
+            await LoadTargetColumnsAsync();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task LoadColumnsAsync()
+    {
+        _columns = [];
+        _selectedColumns.Clear();
+        _businessKey = null;
+        ClearTargetSelections();
+        _parents.Clear();
+        if (_type == DataVaultObjectType.Link) { _parents.Add(new()); _parents.Add(new()); }
+        else if (_type == DataVaultObjectType.Satellite) _parents.Add(new());
+        _error = null;
+        if (_database == null || string.IsNullOrWhiteSpace(_source)) return;
+        _busy = true;
+        try
+        {
+            _columns = (await Api.GetColumnsAsync(_database, _source, default)).Columns;
+            var businessKeys = _columns.Where(c => c.Name.EndsWith("_BK", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var primaryKeys = _columns.Where(c => c.IsPrimaryKey && !c.IsIdentity && !c.IsAutoIncrement).ToArray();
+            _businessKey = businessKeys.Length == 1 ? businessKeys[0].Name :
+                _type == DataVaultObjectType.Reference ? MatchColumn("Code") : null;
+            if (_businessKey == null && primaryKeys.Length == 1) _businessKey = primaryKeys[0].Name;
+            SelectReferenceColumns();
+            if (_type == DataVaultObjectType.Satellite)
+            {
+                string name = _source.Split('.').Last();
+                if (name.StartsWith("STG_", StringComparison.OrdinalIgnoreCase)) name = name[4..];
+                var candidates = ParentTables.Where(t => string.Equals(t.Split('.').Last(), "HUB_" + name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (candidates.Length == 1)
+                {
+                    _parents[0].Table = candidates[0];
+                    await SuggestParentAsync(_parents[0]);
+                }
+            }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+    private string? MatchColumn(string name) => _columns.FirstOrDefault(c =>
+        string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.Name;
+
+    private void SelectReferenceColumns()
+    {
+        if (_type is not (DataVaultObjectType.Reference or DataVaultObjectType.Satellite)) return;
+        _selectedColumns.Clear();
+        string name = _target?.Trim().Split('.').Last() ?? "";
+        if (name.StartsWith("REF_", StringComparison.OrdinalIgnoreCase)) name = name[4..];
+        else if (name.StartsWith("SAT_", StringComparison.OrdinalIgnoreCase)) name = name[4..];
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var codes = _columns.Where(c => c.Name.Contains(name, StringComparison.OrdinalIgnoreCase) &&
+            c.Name.Contains("Code", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (_type == DataVaultObjectType.Reference && codes.Length == 1) _businessKey = codes[0].Name;
+        foreach (var column in _columns.Where(c =>
+            !string.Equals(c.Name, _businessKey, StringComparison.OrdinalIgnoreCase) &&
+            !c.IsPrimaryKey && !c.IsIdentity && !c.IsAutoIncrement &&
+            !NormalizeColumnAlias(c.Name).StartsWith("HK_", StringComparison.OrdinalIgnoreCase) &&
+            !c.Name.EndsWith("_BK", StringComparison.OrdinalIgnoreCase) &&
+            !new[] { "LOAD_DATE", "RECORD_SOURCE", "HASH_DIFF" }.Contains(NormalizeColumnAlias(c.Name), StringComparer.OrdinalIgnoreCase) &&
+            c.Name.Contains(name, StringComparison.OrdinalIgnoreCase)))
+            _selectedColumns.Add(column.Name);
+        ClearTargetSelections();
+    }
+
+    private void ClearTargetSelections() => _targetColumnNames.Clear();
+
+    private string SelectedTarget(string name)
+    {
+        if (_targetColumnNames.TryGetValue(name, out var selected)) return selected;
+        return WritableTargetColumns.FirstOrDefault(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase))
+            ?? MatchTargetAlias(name)
+            ?? (name.EndsWith("_BK", StringComparison.OrdinalIgnoreCase)
+                ? WritableTargetColumns.FirstOrDefault(c => string.Equals(c, name[..^3], StringComparison.OrdinalIgnoreCase)) : null)
+            ?? string.Empty;
+    }
+
+    private string? MatchTargetAlias(string name)
+    {
+        var matches = WritableTargetColumns.Where(c => _columnAliases.Any(rule => rule.Matches(name, c))).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static string NormalizeColumnAlias(string name)
+    {
+        if (string.Equals(name, "LoadDate", StringComparison.OrdinalIgnoreCase)) return "LOAD_DATE";
+        if (string.Equals(name, "RecordSource", StringComparison.OrdinalIgnoreCase)) return "RECORD_SOURCE";
+        if (name.EndsWith("HashDiff", StringComparison.OrdinalIgnoreCase) || name.EndsWith("HASH_DIFF", StringComparison.OrdinalIgnoreCase)) return "HASH_DIFF";
+        if (name.EndsWith("HashKey", StringComparison.OrdinalIgnoreCase)) return "HK_" + name[..^7];
+        return name;
+    }
+
+    private async Task ChangeTableModeAsync()
+    {
+        _target = null;
+        _error = null;
+        await LoadTargetColumnsAsync();
+    }
+
+    private async Task LoadTargetColumnsAsync()
+    {
+        SelectReferenceColumns();
+        int version = ++_targetVersion;
+        _targetColumns = [];
+        ClearTargetSelections();
+        _busy = false;
+        _error = null;
+        if (_createNewTable ||
+            !_tables.Contains(_target?.Trim() ?? "", StringComparer.OrdinalIgnoreCase)) return;
+        _busy = true;
+        try
+        {
+            var columns = (await Api.GetColumnsAsync(Database, _target!.Trim(), default)).Columns;
+            if (version == _targetVersion) _targetColumns = columns;
+        }
+        catch (Exception ex) { if (version == _targetVersion) _error = $"Could not load target columns: {ex.Message}"; }
+        finally { if (version == _targetVersion) _busy = false; }
+    }
+    private int _targetVersion;
+
+    private async Task SuggestParentAsync(GXVaultParentSelection parent)
+    {
+        if (_database == null || !ParentTables.Contains(parent.Table)) return;
+        string table = parent.Table;
+        string source = parent.SourceColumn;
+        string target = parent.Column;
+        try
+        {
+            var columns = (await Api.GetColumnsAsync(_database, table, default)).Columns;
+            if (!_parents.Contains(parent) || parent.Table != table) return;
+            var keys = columns.Where(c => c.Name.EndsWith("_BK", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var hashes = columns.Where(c => c.IsPrimaryKey).ToArray();
+            var mappedBusinessKey = _knownMappings.FirstOrDefault(m => m.Database == Database.Id &&
+                string.Equals(m.TargetTable.Name, table, StringComparison.OrdinalIgnoreCase))?.Columns.FirstOrDefault(c => c.Role == DataVaultColumnRole.BusinessKey)?.TargetColumn;
+            if (parent.SourceColumn == source)
+            {
+                parent.SourceColumn = mappedBusinessKey != null && MatchColumn(mappedBusinessKey) is string matched ? matched : keys.Length == 1
+                    ? MatchColumn(keys[0].Name[..^3]) ?? MatchColumn(keys[0].Name) ?? string.Empty
+                    : hashes.Length == 1 ? MatchColumn(hashes[0].Name) ?? string.Empty : string.Empty;
+                if (_type == DataVaultObjectType.Satellite) _selectedColumns.Remove(parent.SourceColumn);
+            }
+            if (parent.Column == target && hashes.Length == 1)
+            {
+                string name = hashes[0].Name.StartsWith("HK_", StringComparison.OrdinalIgnoreCase) ? hashes[0].Name : "HK_" + hashes[0].Name;
+                string candidate = name;
+                int suffix = 2;
+                while (_parents.Any(p => p != parent && string.Equals(p.Column, candidate, StringComparison.OrdinalIgnoreCase)) ||
+                    (_type == DataVaultObjectType.Link && string.Equals(candidate, PreviewColumns.First(), StringComparison.OrdinalIgnoreCase)))
+                    candidate = name + "_" + suffix++;
+                parent.Column = candidate;
+            }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private void ToggleColumn(string name, bool selected)
+    {
+        if (selected) _selectedColumns.Add(name); else _selectedColumns.Remove(name);
+    }
+    private async Task Cancel() { if (!_busy) await OnCancel.InvokeAsync(); }
+    private async Task CreateAsync()
+    {
+        if (_busy || !CanCreate) return;
+        await SubmitAsync(new()
+        {
+            SourceTable = _source ?? "",
+            TargetTable = _target?.Trim() ?? "",
+            ObjectType = _type,
+            AddMapping = !_createNewTable || MappingMode || _addMapping,
+            UseExistingTable = !_createNewTable,
+            CreateIfMissing = _createNewTable,
+            BusinessKeyColumn = _businessKey,
+            TargetColumns = _createNewTable ? [] : ExpectedColumnNames.ToDictionary(c => c, SelectedTarget, StringComparer.OrdinalIgnoreCase),
+            Columns = _type == DataVaultObjectType.Hub && _businessKey != null ? [_businessKey] : PayloadColumns,
+            Parents = _parents.Select(p => new GXVaultParentSelection { Table = p.Table, SourceColumn = p.SourceColumn, Column = p.Column }).ToList()
+        });
+    }
+    private async Task SubmitAsync(GXCreateVaultTableRequest request)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Api.CreateVaultTableAsync(Database.Id, request, default);
+            if (result.RequiresCreation) throw new InvalidOperationException("Choose Create new table to create the target table.");
+            await OnCompleted.InvokeAsync(result);
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}
+
+
+
+

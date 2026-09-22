@@ -1,0 +1,23 @@
+.table-structure-dialog ::deep .modal {
+    left: 0 !important;
+    top: 0 !important;
+}
+
+.table-structure-dialog ::deep .modal-dialog {
+    width: calc(100vw - 2rem);
+    max-width: 1100px;
+    margin: 1rem auto;
+}
+
+.table-structure-dialog ::deep .modal-content {
+    max-height: calc(100dvh - 2rem);
+}
+
+.table-structure-dialog ::deep .modal-body {
+    overflow: auto;
+    min-height: 0;
+}
+
+.table-structure-dialog ::deep th {
+    white-space: nowrap;
+}

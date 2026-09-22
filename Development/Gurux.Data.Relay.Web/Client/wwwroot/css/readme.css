@@ -1,0 +1,98 @@
+.relay-readme {
+    color-scheme: light dark;
+}
+
+.relay-readme {
+    width: 100%;
+    margin: 0;
+    padding: 0 0 64px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    line-height: 1.6;
+}
+
+.relay-readme img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin: 0;
+}
+
+.relay-readme .intro-image + p {
+    margin-top: 0;
+}
+
+.relay-readme h1, .relay-readme h2, .relay-readme h3, .relay-readme h4, .relay-readme h5, .relay-readme h6 {
+    line-height: 1.25;
+    margin-top: 1.6em;
+    scroll-margin-top: 1rem;
+}
+
+.relay-readme h1 {
+    border-bottom: 1px solid #9995;
+    padding-bottom: .3em;
+}
+
+.relay-readme h2 {
+    border-bottom: 1px solid #9993;
+    padding-bottom: .2em;
+}
+
+.relay-readme .heading-link {
+    margin-left: .45rem;
+    text-decoration: none;
+    opacity: 0;
+    font-weight: normal;
+}
+
+    .relay-readme h1:hover .heading-link, .relay-readme h2:hover .heading-link, .relay-readme h3:hover .heading-link, .relay-readme h4:hover .heading-link, .relay-readme h5:hover .heading-link, .relay-readme h6:hover .heading-link, .relay-readme .heading-link:focus {
+        opacity: .65;
+    }
+
+.relay-readme a {
+    color: #0969da;
+}
+
+.relay-readme code {
+    padding: .12em .35em;
+    border-radius: 4px;
+    background: #8882;
+}
+
+.relay-readme table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+}
+
+.relay-readme th, .relay-readme td {
+    border: 1px solid #8885;
+    padding: .55rem .7rem;
+    text-align: left;
+    vertical-align: top;
+}
+
+.relay-readme th {
+    background: #8882;
+}
+
+.relay-readme blockquote {
+    margin-left: 0;
+    padding: .5rem 1rem;
+    border-left: 4px solid #8887;
+    background: #8881;
+}
+
+@media (prefers-color-scheme: dark) {
+    .relay-readme a {
+        color: #58a6ff;
+    }
+}
+
+/* Align the embedded documentation with the content area's top edge. */
+.relay-readme-container {
+    width: 100%;
+    min-width: 0;
+    contain: inline-size;
+    margin-top: -1.1rem;
+}

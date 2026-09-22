@@ -1,0 +1,54 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+<div class="table-responsive">
+    <GXTable Id="@($"{_gxTableIdPrefix}-1")" @key="Schema" TItem="GXColumnSchema" Context="column" ShowAllData="true" ShowAllUsers="false" ShowRemoved="false"
+             ItemsProvider="GetColumns">
+        <HeaderContent><th>Name</th><th>Type</th><th>Length</th><th>Nullable</th><th>Primary key</th><th>Indexed</th><th>Generated</th></HeaderContent>
+        <ItemContent>
+            <td>@column.Name</td><td>@(string.IsNullOrWhiteSpace(column.DbType) ? column.Type?.Name : column.DbType)</td><td>@column.MaxLength</td>
+            <td>@(column.IsNullable ? "Yes" : "No")</td>
+            <td>@(column.IsPrimaryKey ? "Yes" : "No")</td>
+            <td>@(Schema.IsIndexed(column) ? "Yes" : "No")</td>
+            <td>@(column.IsIdentity || column.IsAutoIncrement || column.IsComputed ? "Yes" : "No")</td>
+        </ItemContent>
+    </GXTable>
+</div>
+
+@code {
+    private readonly string _gxTableIdPrefix = "tablestructure-" + Guid.NewGuid().ToString("N");
+    [Parameter, EditorRequired] public GXTableSchema Schema { get; set; } = default!;
+
+    private ValueTask<ItemsProviderResult<GXColumnSchema>> GetColumns(GXItemsProviderRequest request) =>
+        ValueTask.FromResult(new ItemsProviderResult<GXColumnSchema>(Schema.Columns, Schema.Columns.Count));
+}

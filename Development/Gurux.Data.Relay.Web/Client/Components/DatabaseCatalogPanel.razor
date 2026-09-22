@@ -1,0 +1,359 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using Gurux.Service.Orm.Common.Enums
+@using Gurux.UI.Components.Panel
+
+@inject GXAdminApiClient Api
+@inject NavigationManager Navigation
+
+<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _draft != null || _delete != null || _schemaDatabase != null || _busy || _describing || _describedSchema != null || _dataTableName != null)" OnChanged="LoadAsync">
+    @if (_dataTableName is not null)
+    {
+        <div class="table-structure-dialog">
+            <GXValidationDialog Model="@this" Title="@($"Data: {_dataTableName}")" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseData">
+                <ModeTableDataPanel @key="(_dataDatabaseId, _dataTableName)" Mode="databases" InitialDatabaseId="_dataDatabaseId" InitialTable="@_dataTableName" />
+            </GXValidationDialog>
+        </div>
+    }
+    @if (_describedSchema is not null)
+    {
+        <div class="table-structure-dialog">
+            <GXValidationDialog Model="@this" Title="@($"Table structure: {_describedSchema}")" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseDescription">
+                <TableStructure Schema="_describedSchema" />
+            </GXValidationDialog>
+        </div>
+    }
+    @if (_draft is not null)
+    {
+        <GXValidationDialog Model="@_draft" Title="@(_isNewDatabase ? "Add database" : "Edit database")" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
+            <EditForm Model="_draft" OnValidSubmit="SaveAsync" @key="_draft">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+                <label>Name</label><InputText class="form-control" @bind-Value="_draft.Description" />
+                <label>Database type</label>
+                <InputSelect class="form-select" @bind-Value="_draft.Type">
+                    @foreach (var type in Enum.GetValues<DatabaseType>())
+                    {
+                        <option value="@type">@type</option>
+                    }
+                </InputSelect>
+                <label>Connection string</label><InputTextArea class="form-control" @bind-Value="_draft.ConnectionString" />
+                <label>Record source (default)</label><InputText class="form-control" @bind-Value="_draft.RecordSource" />
+                <label>Delete mode</label>
+                <InputSelect class="form-select" @bind-Value="_draft.DeleteMode">
+                    @foreach (var mode in Enum.GetValues<DeleteMode>())
+                    {
+                        <option value="@mode">@mode</option>
+                    }
+                </InputSelect>
+                <label>Deleted column (for logical delete)</label><InputText class="form-control" @bind-Value="_draft.DeletedColumn" />
+                <div class="actions-row">
+                    <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="TestAsync">Test connection</button>
+                    <button type="submit" class="btn btn-primary" disabled="@_busy">Save</button>
+                    <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
+                </div>
+            </EditForm>
+        </GXValidationDialog>
+    }
+    @if (_delete is not null)
+    {
+        <GXValidationDialog Model="@_delete" Title="Remove database" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
+            <p>Delete database <strong>@Label(_delete)</strong> from the catalog?</p>
+            <button class="btn btn-danger" disabled="@_busy" @onclick="DeleteAsync">Delete</button>
+            <button class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
+        </GXValidationDialog>
+    }
+    <Panel Height="fill">
+        <PanelItem Id="catalog-databases" Width="50%" Height="fill">
+            <h2>Databases</h2>
+            <p>Define databases here once, then select them in Client, Server and Data Vault.</p>
+            @if (_message != null)
+            {
+                <p role="status">@_message</p>
+            }
+            @if (_schemaDatabase is not null)
+            {
+                <h3>Import schema</h3>
+                <p>Database: <strong>@Label(_schemaDatabase)</strong></p>
+                <p>Select a JSON schema file containing one table or a list of tables. Existing tables will not be overwritten.</p>
+                <InputFile OnChange="ImportSchemaAsync" accept=".json,application/json" disabled="@_busy" />
+                <button class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
+            }
+            else
+            {
+                <button class="btn btn-primary" @onclick="AddDatabase">Add database</button>
+                <GXTable Id="@($"{_gxTableIdPrefix}-2")" @key="_databases" TItem="GXDatabase" Context="database"
+                         Active="_selectedDatabase" ActiveChanged="SelectDatabaseAsync"
+                         ShowAllData="true" ShowAllUsers="false" ShowRemoved="false"
+                         ItemsProvider="GetDatabaseItems">
+                    <HeaderContent>
+                        <th>Name</th><th>Type</th><th>Record source</th>
+                    </HeaderContent>
+                    <ItemContent>
+                        <td>@Label(database)</td>
+                        <td><LinkButton Target="database" OnClick="Edit" Text="@database.Type.ToString()" /></td>
+                        <td>@database.RecordSource</td>
+                    </ItemContent>
+                    <MenuContent>
+                        <ContextMenuItem Text="Diagram" Image="oi oi-project" OnClick="OpenDiagram" />
+                        <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="EditSelected" />
+                        <ContextMenuItem Text="Import schema" Image="oi oi-data-transfer-download" OnClick="ImportSelected" />
+                        <ContextMenuItem Text="Export schema" Image="oi oi-data-transfer-upload" OnClick="ExportSelected" />
+                        <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="DeleteSelected" />
+                    </MenuContent>
+                </GXTable>
+            }
+        </PanelItem>
+        <PanelItem Id="catalog-source-tables" Height="fill">
+            <h2>Source tables</h2>
+            @if (_describeError is not null)
+            {
+                <p class="text-danger" role="alert">@_describeError</p>
+            }
+            @if (_selectedDatabase is null)
+            {
+                <p>Select a database to view its source tables.</p>
+            }
+            else
+            {
+                <p>@Label(_selectedDatabase)</p>
+                <button class="btn btn-secondary" disabled="@_tablesLoading" @onclick="() => SelectDatabaseAsync(_selectedDatabase)">Refresh</button>
+                @if (_tablesLoading)
+                {
+                    <p role="status">Loading source tables...</p>
+                }
+                else if (_tablesError is not null)
+                {
+
+                    <p role="alert" class="text-danger">@_tablesError</p>
+                }
+                else if (_sourceTables.Count == 0)
+                {
+
+                    <p>No source tables found.</p>
+                }
+                else
+                {
+                    <GXTable Id="@($"{_gxTableIdPrefix}-1")" @key="_sourceTables" TItem="SourceTableRow" Context="table" @bind-Active="_activeSourceTable"
+                             ShowAllData="true" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetSourceTableItems">
+                        <HeaderContent><th>Name</th></HeaderContent>
+                        <ItemContent>
+                            <td><button type="button" class="btn btn-link" @onclick="() => OpenTableData(table)">@table.Name</button></td>
+                        </ItemContent>
+                        <MenuContent>
+                            <ContextMenuItem Text="Describe" Image="oi oi-list-rich" OnClick="DescribeSelectedAsync" />
+                            <ContextMenuItem Text="Data" Image="oi oi-grid-three-up" OnClick="OpenData" />
+                        </MenuContent>
+                    </GXTable>
+                }
+            }
+        </PanelItem>
+    </Panel>
+</GXLiveView>
+
+@code {
+    private readonly string _gxTableIdPrefix = "databasecatalogpanel-" + Guid.NewGuid().ToString("N");
+    [Inject] public IGXTopMenu? TopMenu { get; set; }
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && TopMenu is not null) { TopMenu.Clear(); TopMenu.EditContext = null; }
+    }
+    private sealed record SourceTableRow(string Name) { public string Id => Name; }
+    private SourceTableRow? _activeSourceTable;
+    private ValueTask<ItemsProviderResult<SourceTableRow>> GetSourceTableItems(GXItemsProviderRequest request)
+        => ValueTask.FromResult(new ItemsProviderResult<SourceTableRow>(_sourceTables.Select(name => new SourceTableRow(name)).ToArray(), _sourceTables.Count));
+    private void OpenDiagram() { if (_selectedDatabase is not null) Navigation.NavigateTo($"/databases/{_selectedDatabase.Id}/diagram"); }
+    private void EditSelected() { if (_selectedDatabase is not null) Edit(_selectedDatabase); }
+
+    private void ImportSelected() => _schemaDatabase = _selectedDatabase;
+    private void ExportSelected()
+    {
+        if (_selectedDatabase is not null)
+            Navigation.NavigateTo($"api/databases/{_selectedDatabase.Id}/schema", forceLoad: true);
+    }
+    private void DeleteSelected() => _delete = _selectedDatabase;
+    private Task DescribeSelectedAsync() => _activeSourceTable is not null && _sourceTables.Contains(_activeSourceTable.Name)
+        ? DescribeAsync(_activeSourceTable.Name) : Task.CompletedTask;
+    private void OpenData()
+    {
+        if (_selectedDatabase is not null && _activeSourceTable is not null && _sourceTables.Contains(_activeSourceTable.Name))
+        {
+            _dataDatabaseId = _selectedDatabase.Id;
+            _dataTableName = _activeSourceTable.Name;
+        }
+    }
+    private Guid _dataDatabaseId;
+    private string? _dataTableName;
+    private void OpenTableData(SourceTableRow table) { _activeSourceTable = table; OpenData(); }
+    private void CloseData() => _dataTableName = null;
+    private GXTableSchema? _describedSchema;
+    private bool _describing;
+    private string? _describeError;
+    private async Task DescribeAsync(string name)
+    {
+        if (_describing || _selectedDatabase is null) return;
+        var database = _selectedDatabase;
+        var request = _tablesRequest;
+        _describing = true;
+        _describeError = null;
+        _describedSchema = null;
+        try
+        {
+            var schema = await Api.GetColumnsAsync(database, name, CancellationToken.None);
+            if (request != _tablesRequest) return;
+            if (string.IsNullOrEmpty(schema.Name)) schema.Name = name;
+            _describedSchema = schema;
+        }
+        catch (Exception ex)
+        {
+            if (request == _tablesRequest) _describeError = $"Could not describe {name}: {ex.Message}";
+        }
+        finally { _describing = false; }
+    }
+    private void CloseDescription() => _describedSchema = null;
+    private GXDatabase? _selectedDatabase;
+    private IReadOnlyList<string> _sourceTables = [];
+    private string? _tablesError;
+    private bool _tablesLoading;
+    private int _tablesRequest;
+    private async Task SelectDatabaseAsync(GXDatabase database)
+    {
+        var request = ++_tablesRequest;
+        _activeSourceTable = null;
+        _describedSchema = null;
+        _describeError = null;
+        _selectedDatabase = database;
+        _sourceTables = [];
+        _tablesError = null;
+        _tablesLoading = true;
+        try
+        {
+            var tables = await Api.GetTablesAsync(database, default);
+            if (request == _tablesRequest) _sourceTables = tables.OrderBy(name => name).ToArray();
+        }
+        catch (Exception ex) { if (request == _tablesRequest) _tablesError = ex.Message; }
+        finally { if (request == _tablesRequest) _tablesLoading = false; }
+    }
+    private ValueTask<ItemsProviderResult<GXDatabase>> GetDatabaseItems(GXItemsProviderRequest request)
+        => ValueTask.FromResult(new ItemsProviderResult<GXDatabase>(_databases, _databases.Count));
+    private List<GXDatabase> _databases = [];
+    private bool _isNewDatabase;
+    private GXDatabase? _draft, _delete, _schemaDatabase;
+    private string? _message;
+    private bool _busy;
+    private static string Label(GXDatabase database) => string.IsNullOrWhiteSpace(database.Description) ? database.Id.ToString() : database.Description;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _databases = await Api.GetDatabaseCatalogAsync(default);
+            var selected = _databases.FirstOrDefault(d => d.Id == _selectedDatabase?.Id) ?? _databases.FirstOrDefault();
+            if (selected is not null) await SelectDatabaseAsync(selected);
+            else { ++_tablesRequest; _selectedDatabase = null; _sourceTables = []; _tablesLoading = false; }
+        }
+        catch (Exception ex) { _message = ex.Message; }
+    }
+    private void AddDatabase()
+    {
+        _isNewDatabase = true;
+        _draft = new GXDatabase();
+    }
+    private void Edit(GXDatabase database)
+    {
+        _isNewDatabase = false;
+        _draft = new()
+        {
+            Id = database.Id,
+            ConcurrencyStamp = database.ConcurrencyStamp,
+            Description = database.Description,
+            Type = database.Type,
+            ConnectionString = database.ConnectionString,
+            RecordSource = database.RecordSource,
+            DeleteMode = database.DeleteMode,
+            DeletedColumn = database.DeletedColumn
+        };
+    }
+    private void Cancel()
+    {
+        if (_busy) return;
+        _isNewDatabase = false;
+        _draft = null;
+        _delete = null;
+        _schemaDatabase = null;
+    }
+    private async Task ImportSchemaAsync(InputFileChangeEventArgs args)
+    {
+        if (_busy || _schemaDatabase is null) return;
+        var database = _schemaDatabase;
+        _busy = true;
+        _message = "Importing schema...";
+        try
+        {
+            await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
+            await Api.ImportCatalogSchemaAsync(database.Id, stream, default);
+            _schemaDatabase = null;
+            await SelectDatabaseAsync(database);
+            _message = $"Schema imported into {Label(database)}. Configure the created tables in the required mode.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+    private async Task SaveAsync()
+    {
+        if (_busy || _draft is null) return;
+        _busy = true;
+        try { await Api.SaveCatalogDatabaseAsync(_draft, default); _isNewDatabase = false; _draft = null; _message = "Database saved."; await LoadAsync(); }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+    private async Task DeleteAsync()
+    {
+        if (_busy || _delete is null) return;
+        _busy = true;
+        try { await Api.DeleteCatalogDatabaseAsync(_delete, default); _delete = null; _message = "Database deleted."; await LoadAsync(); }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+    private async Task TestAsync()
+    {
+        if (_busy || _draft is null) return;
+        _busy = true;
+        try { await Api.TestCatalogDatabaseAsync(_draft, default); _message = "Connection successful."; }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+}
+

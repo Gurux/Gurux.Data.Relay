@@ -1,0 +1,98 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/{Mode}/databases/{DatabaseId:guid}/diagram"
+@page "/databases/{DatabaseId:guid}/diagram"
+@implements IDisposable
+@inject GXAdminApiClient Api
+
+<PageTitle>Database diagram</PageTitle>
+<HelpContext Topic="database-diagram" />
+
+<section class="panel">
+    <h2>Database diagram</h2>
+    <a class="btn btn-secondary mb-3" href="@(Mode is null ? "/databases" : $"/{Mode}/databases")">Back to databases</a>
+    @if (_loading)
+    {
+        <p role="status">Loading database diagram...</p>
+    }
+    else if (_error is not null)
+    {
+        <p class="alert alert-danger" role="alert">@_error</p>
+    }
+    else
+    {
+        <GXMermaid Source="@_source" Height="70vh" />
+    }
+</section>
+
+@code {
+    [Parameter] public string? Mode { get; set; }
+    [Parameter] public Guid DatabaseId { get; set; }
+
+    private string? _source;
+    private string? _error;
+    private bool _loading;
+    private CancellationTokenSource? _load;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _load?.Cancel();
+        _load?.Dispose();
+        var load = _load = new CancellationTokenSource();
+        _loading = true;
+        _source = null;
+        _error = null;
+        try
+        {
+            string source = await Api.GetDatabaseDiagramAsync(Mode, DatabaseId, load.Token);
+            if (!load.IsCancellationRequested) _source = source;
+        }
+        catch (OperationCanceledException) when (load.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (!load.IsCancellationRequested) _error = $"Could not load database diagram: {ex.Message}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_load, load)) _loading = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        _load?.Cancel();
+        _load?.Dispose();
+        _load = null;
+    }
+}

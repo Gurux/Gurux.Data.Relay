@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gurux Data Relay - Web Client UI</title>
+    <link href="css/readme.css" rel="stylesheet">
+</head>
+<body class="relay-readme">
+    <img class="intro-image" src="data-relay.png" alt="Gurux Data Relay" />
+    <p>See An <a href="https://www.gurux.fi/" title="Gurux">Gurux</a> for an overview.</p>
+    <p>Join the Gurux Community or follow <a href="https://twitter.com/guruxorg" title="@Gurux">@Gurux</a> for project updates.</p>
+    <p>The Gurux Data Relay manages data transmission, reception, and Data Vault processing.</p>
+    <p>For more info check out <a href="https://www.gurux.fi/Gurux.Data.Relay" title="Gurux.Data Relay">Gurux.Data.Relay</a>.</p>
+    <p>We are updating documentation on Gurux web page.</p>
+    <p>Ideas and discussions</p>
+    <p><strong>===========================</strong></p>
+    <p>If you have problems or ideas you can ask your questions in Gurux <a href="https://www.gurux.fi/forum">Forum</a>. Please, create a new topic when you have a new question.</p>
+    <p>This is the best place for bringing opinions and contributions.</p>
+    <blockquote>
+        <p>[!IMPORTANT]</p>
+        <p>GitHub is used primarily for publishing and distributing our open-source code.</p>
+        <p>For technical questions, support requests, and bug reports, please use the</p>
+        <p><strong>Gurux Forum: https://www.gurux.fi/forum/</strong></p>
+        <p>GitHub issues and discussions are not monitored regularly, so messages posted</p>
+        <p>here may not receive a timely response.</p>
+    </blockquote>
+    <h1 id="quick-start">Quick start<a class="heading-link" href="#quick-start" aria-label="Link to this section">#</a></h1>
+    <p>Configure the receiving Server first, then connect the Client and send the source database schema.</p>
+    <ol>
+        <li><strong>Set the Server database.</strong> Open <strong>Server &gt; Databases</strong> and add the destination database where received data will be stored. Set the database type and connection string, save the settings, and test the database connection.</li>
+        <li><strong>Configure the receiving transport.</strong> Open <strong>Server &gt; Transports</strong> and add a transport for incoming data. Select TCP or MQTT and configure the listening port or MQTT connection settings. Configure the table mappings to use the destination database and save the settings. Make sure the Server is running and ready to receive connections.</li>
+        <li><strong>Select the Client database.</strong> Open <strong>Client &gt; Databases</strong> and add the source database from which data will be read. Set the database type and connection string, save the settings, and test the database connection.</li>
+        <li><strong>Configure the Client transport.</strong> Open <strong>Client &gt; Transports</strong> and add a transport that connects to the Server. Match the Server's transport settings, including the address, port, and any required authentication or MQTT topics. Select the source database and tables to transfer, then save the settings.</li>
+        <li><strong>Test the Server connection.</strong> In the Client transport's action menu, select <strong>Test server connection</strong>. Confirm that the connection succeeds before continuing.</li>
+        <li><strong>Send the schema.</strong> Open the Client settings and select <strong>Send schema</strong> to send the Client database schema to the Server.</li>
+    </ol>
+    <h2 id="quick-start-data-vault">Quick start – Data Vault<a class="heading-link" href="#quick-start-data-vault" aria-label="Link to this section">#</a></h2>
+    <p>Select the database, create a Stage table, and then build the Data Vault model.</p>
+    <ol>
+        <li><strong>Select the database.</strong> Open <strong>Data Vault &gt; Model</strong> and select the database to use. If it has not been configured yet, add it under <strong>Data Vault &gt; Databases</strong> first.</li>
+        <li><strong>Add a Stage table.</strong> Select <strong>Add stage</strong>, configure the Stage table, and save it.</li>
+        <li><strong>Add a Hub.</strong> Select the Stage table you created and add a Hub. Configure its business key and save the settings.</li>
+        <li><strong>Add a Link if needed.</strong> If the model contains relationships between Hubs, add a Link and select the related Hubs.</li>
+        <li><strong>Add a Satellite.</strong> Add a Satellite for the descriptive attributes and associate it with the appropriate Hub or Link.</li>
+        <li><strong>Add a Reference.</strong> Add a Reference table for lookup values used by the model.</li>
+        <li><strong>Add a Mart.</strong> Finally, create an Information Mart and select the data and columns to include.</li>
+    </ol>
+    <h1 id="web-client-ui">Web Client UI<a class="heading-link" href="#web-client-ui" aria-label="Link to this section">#</a></h1>
+    <p>This guide describes the views and settings available in the user interface.</p>
+    <p>Select <strong>Client</strong>, <strong>Server</strong>, or <strong>Data Vault</strong> from the navigation menu. Each mode has its own databases, settings, and events.</p>
+    <h1 id="client">Client<a class="heading-link" href="#client" aria-label="Link to this section">#</a></h1>
+    <p>The Client reads tables from source databases and sends their data to the receiving server using the configured transports.</p>
+    <h2 id="client-databases-source-databases">Databases – Source Databases<a class="heading-link" href="#client-databases-source-databases" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/databases</code>.</p>
+    <p>Add a source database using <strong>Add...</strong>. The database editor contains the following settings:</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Database type</td>
+                <td>The database system to use, for example SQLite, MSSQL, or PostgreSQL.</td>
+            </tr>
+            <tr>
+                <td>Description</td>
+                <td>A recognizable description of the database. This is also used in selection lists.</td>
+            </tr>
+            <tr>
+                <td>Connection string</td>
+                <td>The database connection used by the server, including the required addresses and authentication information.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>Test connection</strong> tests the selected database, while <strong>Test connections</strong> tests the database connections in the list. Status displays the result of the connection test. The type and description search fields filter the list on the server. <strong>Diagram</strong> opens the database schema diagram. <strong>Delete</strong> removes the database configuration; first remove any transport mappings that reference it.</p>
+    <p>To transfer table schemas, select a database and choose <strong>Import schema</strong> or <strong>Export schema</strong> below <strong>Test connections</strong>. The dialog lists tables with selection checkboxes and includes <strong>Select all</strong> and <strong>Clear selection</strong>.</p>
+    <p>For export, select the source tables, click <strong>Export selected</strong>, then <strong>Download schema</strong> to save their schemas in one JSON file. For import, open a schema JSON file, select the tables to create, and click <strong>Import selected</strong>. Both a single-table schema and an array of table schemas are accepted. The selected database is the destination. Each row shows its result; successfully imported tables are excluded from retries. Existing tables are not overwritten, and table rows are not transferred.</p>
+    <h2 id="client-tables-tables-to-transfer">Tables – Tables to Transfer<a class="heading-link" href="#client-tables-tables-to-transfer" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/tables</code>.</p>
+    <p>Select a database. <strong>Configured tables</strong> displays the configured tables, their schedule type, and the last and next transfer times. A new source table can be selected from the <strong>Source tables</strong> list. Click the table name to edit its configuration.</p>
+    <h3 id="client-tables-tables-to-transfer-table">Table<a class="heading-link" href="#client-tables-tables-to-transfer-table" aria-label="Link to this section">#</a></h3>
+    <ul>
+        <li>
+            <p><strong>Name / table name:</strong> The source table to transfer.</p>
+        </li>
+        <li>
+            <p><strong>Transfer:</strong> Selects the columns to send. <strong>Select all columns</strong> selects all columns.</p>
+        </li>
+        <li>
+            <p><strong>Key:</strong> Selects the key columns used to identify a row.</p>
+        </li>
+    </ul>
+    <h3 id="client-tables-tables-to-transfer-tracking">Tracking<a class="heading-link" href="#client-tables-tables-to-transfer-tracking" aria-label="Link to this section">#</a></h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Delete source rows after transfer</td>
+                <td>Deletes acknowledged source rows after all recipients have accepted the transfer batch. Key columns must be selected.</td>
+            </tr>
+            <tr>
+                <td>Incremental column</td>
+                <td>Optional column used for incremental transfers.</td>
+            </tr>
+            <tr>
+                <td>Change tracking: None</td>
+                <td>No separate change-tracking method is used.</td>
+            </tr>
+            <tr>
+                <td>Change tracking: LastRow</td>
+                <td>Tracking is based on the selected Tracking column and the stored progress value.</td>
+            </tr>
+            <tr>
+                <td>Change tracking: Version</td>
+                <td>Changes are detected based on the version in the Tracking column.</td>
+            </tr>
+            <tr>
+                <td>Change tracking: Timestamp</td>
+                <td>Uses the Created, Updated, and Deleted columns to detect changes.</td>
+            </tr>
+        </tbody>
+    </table>
+    <h3 id="client-tables-tables-to-transfer-schedule">Schedule<a class="heading-link" href="#client-tables-tables-to-transfer-schedule" aria-label="Link to this section">#</a></h3>
+    <p><strong>Schedule</strong> defines when transfers are executed. <strong>Interval</strong> uses an interval specified in seconds, <strong>Daily</strong> uses a daily time, and <strong>Cron</strong> uses a cron expression. <strong>Manual</strong>, <strong>Continuous</strong>, and <strong>DatabaseChange</strong> are also available. DatabaseChange behavior depends on the database's change-notification support. Cron expressions are validated in the editor.</p>
+    <p>The table action menu contains <strong>Edit</strong>, <strong>Delete</strong>, <strong>Test server connection</strong>, <strong>Send Schema</strong>, <strong>Describe</strong>, <strong>Export schema</strong>, and <strong>Import schema</strong>. Describe displays the columns and keys. Send Schema sends the schema information to the recipient.</p>
+    <p><strong>Export schema</strong> prepares the selected table's structure as JSON. Select <strong>Download schema</strong> to save the <code>.schema.json</code> file. <strong>Import schema</strong> opens a file picker and creates the table named in the JSON file in the selected Client database. Existing tables are not overwritten, and table rows are not included. Import schema is also available next to <strong>Add...</strong>, so it can be used when the database has no configured tables. After importing, select the new source table to configure its transfers.</p>
+    <p>Schema import supports columns, primary keys, and single-column unique constraints. Schemas containing foreign keys, computed columns, or additional indexes are rejected because these cannot be recreated by the current table creation method.</p>
+    <h2 id="client-transports-transfer-connections">Transports – Transfer Connections<a class="heading-link" href="#client-transports-transfer-connections" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/transports</code>.</p>
+    <p>Add, edit, or delete a transport. The transport editor contains <strong>Connection</strong>, <strong>Transfer</strong>, and <strong>Tables</strong> settings.</p>
+    <h3 id="client-transports-transfer-connections-connection">Connection<a class="heading-link" href="#client-transports-transfer-connections-connection" aria-label="Link to this section">#</a></h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Description</td>
+                <td>Description of the transport.</td>
+            </tr>
+            <tr>
+                <td>Type</td>
+                <td>TCP or MQTT transport.</td>
+            </tr>
+            <tr>
+                <td>Host, Port</td>
+                <td>Address and port of the TCP recipient.</td>
+            </tr>
+            <tr>
+                <td>Connect timeout</td>
+                <td>Timeout for establishing the TCP connection.</td>
+            </tr>
+            <tr>
+                <td>Acknowledgement timeout</td>
+                <td>Time to wait for an acknowledgement from the recipient.</td>
+            </tr>
+            <tr>
+                <td>Broker, Port</td>
+                <td>Address and port of the MQTT broker.</td>
+            </tr>
+            <tr>
+                <td>Topic</td>
+                <td>MQTT message topic.</td>
+            </tr>
+            <tr>
+                <td>Acknowledgement topic</td>
+                <td>MQTT acknowledgement topic.</td>
+            </tr>
+            <tr>
+                <td>Username, Password</td>
+                <td>MQTT authentication credentials. When editing, leaving the password field empty keeps the existing password.</td>
+            </tr>
+            <tr>
+                <td>Use TLS</td>
+                <td>Enables TLS encryption for the MQTT connection.</td>
+            </tr>
+            <tr>
+                <td>Maximum message size</td>
+                <td>Limits the message size.</td>
+            </tr>
+        </tbody>
+    </table>
+    <h3 id="client-transports-transfer-connections-transfer-and-tables">Transfer and Tables<a class="heading-link" href="#client-transports-transfer-connections-transfer-and-tables" aria-label="Link to this section">#</a></h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Batch size</td>
+                <td>Number of rows processed in a single transfer batch.</td>
+            </tr>
+            <tr>
+                <td>Retry count</td>
+                <td>Number of retries after a failed attempt.</td>
+            </tr>
+            <tr>
+                <td>Retry delay</td>
+                <td>Delay between retry attempts.</td>
+            </tr>
+            <tr>
+                <td>Ping after</td>
+                <td>Interval for checking the connection.</td>
+            </tr>
+            <tr>
+                <td>Allow concurrent runs</td>
+                <td>Allows concurrent executions.</td>
+            </tr>
+            <tr>
+                <td>Tables</td>
+                <td>Selects the tables from each database that are sent through this transport.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>Save the transport for the table selections to take effect.</p>
+    <h2 id="client-data-source-table-data">Data – Source Table Data<a class="heading-link" href="#client-data-source-table-data" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/data</code>.</p>
+    <p>Select <strong>Export</strong>, then <strong>Download JSON</strong> to save all rows matching the current column filters, including rows on other pages. The JSON file contains an array of objects with column names and can be used for JSON import.</p>
+    <p>Select a database and table. The view displays columns and paginated rows, which can be filtered using column-specific search fields.</p>
+    <p><strong>Import CSV / JSON</strong> imports a file into the selected table. For CSV imports, select the delimiter and specify whether the first row contains headers. Verify the destination database and table before importing.</p>
+    <h2 id="client-state-transfer-state">State – Transfer State<a class="heading-link" href="#client-state-transfer-state" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/state</code>.</p>
+    <p>The database selection filters the table state information. Table state includes information such as the last successful transfer, last attempt time, row count, checkpoint, last error, consecutive failures, and execution duration.</p>
+    <p><strong>Reset transfer checkpoint</strong> resets the progress position of the selected table. The next execution may resend rows that have already been transferred; other transfer history is preserved.</p>
+    <h2 id="client-events-events">Log – Client Log<a class="heading-link" href="#client-events-events" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/log</code>.</p>
+    <p>The list displays the time, database, Level, Source, Message, and Exception/Error. The database selection filters events by database. <strong>Minimum level</strong> selects the lowest log level to display. The Source, Message, and Exception/Error search fields filter events by text. Open a message to view detailed event information.</p>
+    <p><strong>Clean</strong> opens the event deletion confirmation. Review the scope shown in the confirmation before accepting it: log-level and text-field filters do not restrict which events are deleted.</p>
+    <h2 id="client-settings-client-settings">Settings – Client Settings<a class="heading-link" href="#client-settings-client-settings" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/client/overview</code>.</p>
+    <p>The JSON editor displays the Client settings. <strong>Save</strong> saves the settings, <strong>Export settings</strong> creates a downloadable settings file, and <strong>Import settings</strong> imports settings from a file. Preserve existing identifiers and concurrency information when editing existing configurations.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Databases</td>
+                <td>Source databases, tables, and their settings.</td>
+            </tr>
+            <tr>
+                <td>Transports</td>
+                <td>Transfer connections and table mappings.</td>
+            </tr>
+            <tr>
+                <td>EventLogLevel</td>
+                <td>Minimum level of application events to store. This is not the search filter used in the Log view.</td>
+            </tr>
+            <tr>
+                <td>CommunicationLogLevel</td>
+                <td>Minimum level of communication events to store.</td>
+            </tr>
+            <tr>
+                <td>RestEnabled</td>
+                <td>Availability of the mode's REST interface and the UI that uses it.</td>
+            </tr>
+            <tr>
+                <td>SwaggerEnabled</td>
+                <td>Controls whether the mode is included in the API documentation.</td>
+            </tr>
+            <tr>
+                <td>CorsEnabled, CorsAllowedOrigins, CorsAllowCredentials</td>
+                <td>Settings for allowed browser origins and requests containing credentials.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>Client settings also contain <strong>Reset client state</strong> and <strong>Send schema</strong>. Reset client state resets transfer-state information. To reset an individual table, use the State view.</p>
+    <h1 id="server">Server<a class="heading-link" href="#server" aria-label="Link to this section">#</a></h1>
+    <p>The Server receives data sent by Clients and writes it to the configured destination databases.</p>
+    <h2 id="server-databases-destination-databases">Databases – Destination Databases<a class="heading-link" href="#server-databases-destination-databases" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/databases</code>.</p>
+    <p>Add receiving databases. Database type, Description, Connection string, connection tests, and Diagram work in the same way as on the Client. Server database settings also include:</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Delete mode</td>
+                <td>Defines how deletions are handled at the destination. PhysicalDelete removes the row, while SoftDelete uses a deletion marker.</td>
+            </tr>
+            <tr>
+                <td>Deleted column</td>
+                <td>The deletion-marker column used by SoftDelete mode.</td>
+            </tr>
+        </tbody>
+    </table>
+    <h2 id="server-transports-receiving-and-table-mappings">Transports – Receiving and Table Mappings<a class="heading-link" href="#server-transports-receiving-and-table-mappings" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/transports</code>.</p>
+    <p>Add a receiving transport and select TCP or MQTT. For a TCP transport, specify the listening port. For MQTT, configure the broker, port, message and acknowledgement topics, authentication, and TLS when required. Maximum message size limits the size of messages.</p>
+    <p><strong>Table mappings</strong> maps incoming tables to their destinations:</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Source table name</td>
+                <td>Table name used in the sender's message.</td>
+            </tr>
+            <tr>
+                <td>Destination database</td>
+                <td>Destination database from the Server database list.</td>
+            </tr>
+            <tr>
+                <td>Destination table</td>
+                <td>Table where incoming rows are written.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>Add mapping</strong> adds a mapping. <strong>Apply mapping</strong> applies it to the editor; also save the transport to persist the change. Mappings and transports can be edited or deleted.</p>
+    <h2 id="server-data-received-data">Data – Received Data<a class="heading-link" href="#server-data-received-data" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/data</code>.</p>
+    <p>Select <strong>Export</strong>, then <strong>Download JSON</strong> to save all rows matching the current column filters, including rows on other pages.</p>
+    <p>Select a database and table to view the destination rows. Column filters and pagination make it easier to inspect received data. Unlike the Client Data view, the Server Data view does not provide CSV/JSON import.</p>
+    <h2 id="server-state-receiving-state">State – Receiving State<a class="heading-link" href="#server-state-receiving-state" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/state</code>.</p>
+    <p>Displays table mappings and processed messages. For each message, you can inspect its identifier, processing time, status, and possible error. Use this information to verify successful reception and troubleshoot problems.</p>
+    <h2 id="server-events-server-events">Log – Server Log<a class="heading-link" href="#server-events-server-events" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/log</code>.</p>
+    <p>Displays the Server log. Database, minimum-level, and text filters, as well as opening event details, work in the same way as in the Client Log view. Text searches and log-level filters in the Clean operation do not restrict the events being deleted.</p>
+    <h2 id="server-settings-server-settings">Settings – Server Settings<a class="heading-link" href="#server-settings-server-settings" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/server/overview</code>.</p>
+    <p>The JSON editor manages Server databases, receiving transports, and their mappings. <strong>Save</strong>, <strong>Discard changes</strong>, <strong>Export settings</strong>, and <strong>Import settings</strong> work in the same way as on the Client. EventLogLevel, CommunicationLogLevel, REST, Swagger, and CORS settings apply specifically to Server mode.</p>
+    <h1 id="data-vault">Data Vault<a class="heading-link" href="#data-vault" aria-label="Link to this section">#</a></h1>
+    <p>Data Vault creates and maintains data warehouse tables based on source tables, column mappings, and schedules.</p>
+    <h2 id="data-vault-databases-data-warehouse-databases">Databases – Data Warehouse Databases<a class="heading-link" href="#data-vault-databases-data-warehouse-databases" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/databases</code>.</p>
+    <p>Add databases used for Data Vault processing and configure their type, description, and connection string. Connection tests, type and description filtering, editing, deletion, and database diagrams are available.</p>
+    <h2 id="data-vault-model-data-warehouse-model">Model – Data Warehouse Model<a class="heading-link" href="#data-vault-model-data-warehouse-model" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/model</code>.</p>
+    <p>Select a database. The <strong>Mappings</strong> list displays the object type, source, target, and schedule. The list can be filtered using these fields. <strong>Mapping details</strong> for the selected configuration displays the column mappings.</p>
+    <p><strong>Start</strong> executes the selected configuration, <strong>Edit</strong> modifies it, and <strong>Delete</strong> removes it.</p>
+    <h3 id="data-vault-model-data-warehouse-model-tables-and-mappings">Tables and Mappings<a class="heading-link" href="#data-vault-model-data-warehouse-model-tables-and-mappings" aria-label="Link to this section">#</a></h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Setting or object</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Object type</td>
+                <td>Role of the configuration in the data warehouse, for example Staging, Hub, Link, Satellite, or InformationMart.</td>
+            </tr>
+            <tr>
+                <td>Source table</td>
+                <td>Source table to read.</td>
+            </tr>
+            <tr>
+                <td>Target table / Target table name</td>
+                <td>Processing destination or name of the table to create.</td>
+            </tr>
+            <tr>
+                <td>Business Key</td>
+                <td>Business key of the Hub.</td>
+            </tr>
+            <tr>
+                <td>Parent table</td>
+                <td>Referenced Hub or another parent table allowed by the editor.</td>
+            </tr>
+            <tr>
+                <td>Source key column</td>
+                <td>Source column used to create the reference key.</td>
+            </tr>
+            <tr>
+                <td>Target hash column</td>
+                <td>Target reference-key column, for example <code>HK_role</code>.</td>
+            </tr>
+            <tr>
+                <td>Code column</td>
+                <td>Key column of a code table when used by the selected type.</td>
+            </tr>
+            <tr>
+                <td>Source column, Target column</td>
+                <td>Mapping between a source and destination column.</td>
+            </tr>
+            <tr>
+                <td>Role</td>
+                <td>Role of the column in the data warehouse configuration.</td>
+            </tr>
+            <tr>
+                <td>Add mapping</td>
+                <td>Creates a processing configuration when the table is created.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>The fields shown in the creation dialog depend on the object type. Add columns and Hub references as required. If the destination does not yet exist, the UI may ask you to confirm creation of both the table and its mapping.</p>
+    <h3 id="data-vault-model-data-warehouse-model-information-mart">Information Mart<a class="heading-link" href="#data-vault-model-data-warehouse-model-information-mart" aria-label="Link to this section">#</a></h3>
+    <p>In the Information Mart editor, select the destination name, Root Hub when required, tables and columns to include, and names for the result columns. Required keys remain selected. <strong>Aggregation</strong> defines how a column is aggregated when aggregation is available.</p>
+    <p><strong>Refresh schedule</strong> defines the update schedule, and <strong>Interval</strong> specifies its interval. <strong>Create Mart</strong> creates the Mart. For an existing mapping-based Mart, <strong>Refresh Mart</strong> refreshes its data.</p>
+    <h3 id="data-vault-model-data-warehouse-model-schedule">Schedule<a class="heading-link" href="#data-vault-model-data-warehouse-model-schedule" aria-label="Link to this section">#</a></h3>
+    <p>The mapping's <strong>Schedule</strong> selects the execution method. Depending on the type, the editor accepts an Interval, Cron expression, or Time. Information Mart uses its own Refresh schedule setting. Select a schedule based on the source update frequency and processing requirements.</p>
+    <h2 id="data-vault-data-data-warehouse-content">Data – Data Warehouse Content<a class="heading-link" href="#data-vault-data-data-warehouse-content" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/data</code>.</p>
+    <p>Select <strong>Export</strong>, then <strong>Download JSON</strong> to save all rows matching the current column filters, including rows on other pages. Export is available for any selected table.</p>
+    <p>Select a database and table to browse rows and apply column-specific filters. CSV/JSON import is available for Staging destinations. For CSV imports, configure the delimiter and whether the first row contains headers.</p>
+    <h2 id="data-vault-state-processing-state">State – Processing State<a class="heading-link" href="#data-vault-state-processing-state" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/state</code>.</p>
+    <p>Displays the mapping's database, type, source, target, and state. It also shows the times of the last start, completion, and successful execution, as well as the row count, duration, and possible error. Use this information to monitor scheduled processing and locate failed operations.</p>
+    <h2 id="data-vault-events-data-vault-events">Log – Data Vault Log<a class="heading-link" href="#data-vault-events-data-vault-events" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/log</code>.</p>
+    <p>Displays Data Vault logs. Filter the view by database, <strong>Minimum level</strong>, or the Source, Message, and Exception/Error search fields. Open a message to view its details.</p>
+    <p><strong>Clean</strong> opens the deletion confirmation. Text searches and log-level filters do not restrict which events are deleted.</p>
+    <h2 id="data-vault-settings-data-vault-settings">Settings – Data Vault Settings<a class="heading-link" href="#data-vault-settings-data-vault-settings" aria-label="Link to this section">#</a></h2>
+    <p>Address: <code>/datavault/overview</code>.</p>
+    <p>The JSON editor manages Data Vault databases and mappings. <strong>Save</strong> saves the settings, <strong>Discard changes</strong> restores the saved values, and <strong>Export settings</strong> / <strong>Import settings</strong> transfer settings using a file.</p>
+    <p>The minimum logging levels and REST, Swagger, and CORS settings work per mode in the same way as for Client and Server.</p>
+    <p>The application's shared <strong>Settings</strong> page separately defines the database type and connection string used to store configuration data. <strong>Test</strong> tests the connection and <strong>Save</strong> saves the setting.</p>
+    <p>The <strong>Update</strong> page updates the configuration database table structures.</p>
+    <p>These shared pages do not change the connection of an individual Client, Server, or Data Vault database.</p>
+
+</body>
+</html>

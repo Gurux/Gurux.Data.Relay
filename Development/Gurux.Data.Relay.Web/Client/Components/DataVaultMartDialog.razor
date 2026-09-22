@@ -1,0 +1,398 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared.Enums
+
+@inject GXAdminApiClient Api
+@implements IDisposable
+
+<GXValidationDialog Model="@this" Title="Add Information Mart" HelpTopic="add-mart" OkButtonTitle="" CancelButtonTitle="" OnCancel="CancelAsync">
+    @if (_error != null)
+    {
+        <div class="alert alert-danger" role="alert">@_error</div>
+    }
+    @if (_loading)
+    {
+        <p role="status">Loading available columns…</p>
+    }
+    <fieldset disabled="@(_loading || _saving)">
+        <p>Source table: @SourceTable</p>
+        <label>
+            <input type="checkbox" @bind="_createNewTable" @bind:after="ChangeTargetModeAsync" />
+            <ValidationMessage For="@(() => _createNewTable)" /> Create new table
+        </label>
+        <label>Target table name</label>
+        @if (_createNewTable)
+        {
+            <InputText @bind-Value="_target" class="form-control" />
+            <ValidationMessage For="@(() => _target)" />
+        }
+        else
+        {
+            <DropdownSearch Items="_targetTables" @bind-Value="_target" @bind-Value:after="LoadTargetColumnsAsync" ShowItemsWhenEmpty="true" class="form-control" />
+            <ValidationMessage For="@(() => _target)" />
+            <p>Existing rows are preserved until a manual or scheduled refresh.</p>
+        }
+        @if (_preview.Hubs.Count > 1)
+        {
+            <label>Root Hub</label>
+            <select class="form-select" value="@_preview.HubMappingId" @onchange="ChangeHubAsync">
+                <option value="@Guid.Empty">Select a Hub</option>
+                @foreach (var hub in _preview.Hubs)
+                {
+                    <option value="@hub.MappingId">@hub.Table</option>
+                }
+            </select>
+        }
+        @foreach (var message in _preview.Messages)
+        {
+            <p>@message</p>
+        }
+        <p>One row per root Hub key. Satellites use their current or latest row. Columns reached through Links require Min, Max, Count, CountDistinct or Average.</p>
+        <p>Select the source tables, then choose the columns to include. The selections are saved as column mappings for subsequent refreshes.</p>
+        <button type="button" class="btn btn-secondary" disabled="@(_loadingTarget || _preview.Columns.Count == 0)" @onclick="SelectAllColumns">Select all columns</button>
+        <p class="form-text">Selects all available tables and columns, including technical columns. Choose aggregations for columns reached through Links. For an existing target table, review the output column selections.</p>
+        <label>
+            <input type="checkbox" @bind="_showTechnicalColumns" />
+            <ValidationMessage For="@(() => _showTechnicalColumns)" /> Show technical columns (hash keys, load date and record source)
+        </label>
+        @foreach (var type in _preview.Columns.GroupBy(c => c.ObjectType))
+        {
+            <h3>@type.Key</h3>
+            @foreach (var table in type.GroupBy(c => c.MappingId))
+            {
+                <div class="border rounded p-3 mb-3" @key="table.Key">
+                    <label>
+                        <input type="checkbox" checked="@_selectedTables.Contains(table.Key)" disabled="@table.Any(c => c.IsKey)"
+                               @onchange="e => ToggleTable(table.Key, e.Value is true)" /> @table.First().Table
+                    </label>
+                    @if (_selectedTables.Contains(table.Key))
+                    {
+                        @if (!_showTechnicalColumns && table.All(c => IsTechnicalColumn(c.Column)))
+                        {
+                            <p class="form-text">This table contains only technical columns. They are shown so you can select a column.</p>
+                        }
+                        @foreach (var column in table.Where(c => _showTechnicalColumns || c.IsKey || !IsTechnicalColumn(c.Column) || table.All(item => IsTechnicalColumn(item.Column))))
+                        {
+                            <div class="mb-3" @key="column">
+                                <label>
+                                    <input type="checkbox" checked="@_selections.ContainsKey(column)" disabled="@column.IsKey"
+                                           @onchange="e => ToggleColumn(column, e.Value is true)" /> @column.Table.@column.Column @(column.IsKey ? "(required key)" : "")
+                                </label>
+                                <small class="d-block">@column.JoinDescription</small>
+                                @if (_selections.TryGetValue(column, out var selection))
+                                {
+                                    <label>Output column name</label>
+                                    @if (_createNewTable)
+                                    {
+                                        <InputText @bind-Value="selection.TargetColumn" class="form-control" />
+                                        <ValidationMessage For="@(() => selection.TargetColumn)" />
+                                    }
+                                    else
+                                    {
+                                        <DropdownSearch @key="(_targetVersion, column)" Items="_targetColumns" @bind-Value="selection.TargetColumn" ShowItemsWhenEmpty="true" class="form-control" />
+                                        <ValidationMessage For="@(() => selection.TargetColumn)" />
+                                    }
+                                    @if (column.RequiresAggregation)
+                                    {
+                                        <label>Aggregation</label>
+                                        <select @bind="selection.Aggregation" class="form-select">
+                                            <option value="None">Select aggregation</option>
+                                            <option value="Min">Min</option>
+                                            <option value="Max">Max</option>
+                                            <option value="Count">Count</option>
+                                            <option value="CountDistinct">CountDistinct</option>
+                                            <option value="Average">Average</option>
+                                        </select>
+                                        <ValidationMessage For="@(() => selection.Aggregation)" />
+                                    }
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+            }
+        }
+        <p>Count counts non-null values; CountDistinct counts distinct non-null values. Average calculates the mean of numeric values. Select at least one column from each selected table.</p>
+        <label>Refresh schedule</label>
+        <select @bind="_scheduleType" class="form-select">
+            <option value="@ScheduleType.Manual">Manual</option>
+            <option value="@ScheduleType.Interval">Interval</option>
+        </select>
+        <ValidationMessage For="@(() => _scheduleType)" />
+        @if (_scheduleType == ScheduleType.Interval)
+        {
+            <label>Interval (seconds)</label>
+            <input type="number" min="1" @bind="_intervalSeconds" class="form-control" />
+            <ValidationMessage For="@(() => _intervalSeconds)" />
+        }
+        <button type="button" class="btn btn-success" disabled="@(_loading || _loadingTarget || _saving)" @onclick="CreateAsync">@(_saving ? "Creating…" : "Create Mart")</button>
+        <button type="button" class="btn btn-secondary" @onclick="CancelAsync">Cancel</button>
+    </fieldset>
+</GXValidationDialog>
+
+@code {
+    [Parameter] public Guid DatabaseId { get; set; }
+    [Parameter] public string SourceTable { get; set; } = string.Empty;
+    [Parameter] public EventCallback<GXCreateVaultTableResult> OnCreated { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private GXMartPreview _preview = new();
+    private readonly Dictionary<GXMartColumnOption, GXMartColumnSelection> _selections = [];
+    private readonly HashSet<Guid> _selectedTables = [];
+    private string _target = string.Empty;
+    private bool _createNewTable = true;
+    private bool _showTechnicalColumns;
+    private static bool IsTechnicalColumn(string name) =>
+        string.Equals(name, "LOAD_DATE", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "LoadDate", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "RECORD_SOURCE", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "RecordSource", StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith("HK_", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith("HashKey", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith("HashDiff", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith("HASH_DIFF", StringComparison.OrdinalIgnoreCase);
+    private GXDatabase? _database;
+    private IReadOnlyList<string> _targetTables = [];
+    private IReadOnlyList<string> _targetColumns = [];
+    private bool _loadingTarget;
+    private int _targetVersion;
+    private string? _error;
+    private ScheduleType _scheduleType = ScheduleType.Manual;
+    private int _intervalSeconds = 60;
+    private bool _loading, _saving, _disposed;
+    private Guid _loadedDatabase;
+    private string? _loadedSource;
+    private int _version;
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool CanCreate => !_loading && !_loadingTarget && !_saving && !CreationErrors().Any();
+    private IEnumerable<string> CreationErrors()
+    {
+        if (_preview.HubMappingId == Guid.Empty) yield return "Select a root Hub.";
+        if (string.IsNullOrWhiteSpace(_target)) yield return "Enter a target table name.";
+        if (!_createNewTable && !_targetTables.Contains(_target)) yield return "Select an existing target table.";
+        if (_selections.Count == 0) yield return "Select at least one column.";
+        if (!_preview.Columns.Any(c => c.IsKey) || !_preview.Columns.Where(c => c.IsKey).All(_selections.ContainsKey))
+            yield return "The required root Hub key is missing. Check the Hub mapping.";
+        foreach (var pair in _selections)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Value.TargetColumn))
+                yield return $"Enter an output column name for {pair.Key.Table}.{pair.Key.Column}.";
+            else if (!_createNewTable && !_targetColumns.Contains(pair.Value.TargetColumn))
+                yield return $"Select an existing target column for {pair.Key.Table}.{pair.Key.Column}.";
+            if (pair.Key.RequiresAggregation && !new[] { Aggregation.Min, Aggregation.Max, Aggregation.Count, Aggregation.CountDistinct, Aggregation.Average }.Contains(pair.Value.Aggregation))
+                yield return $"Select Min, Max, Count, CountDistinct or Average for {pair.Key.Table}.{pair.Key.Column}.";
+        }
+        foreach (var group in _selections.Values.Where(c => !string.IsNullOrWhiteSpace(c.TargetColumn))
+            .GroupBy(c => c.TargetColumn.Trim(), StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+            yield return $"Output column '{group.Key}' is selected more than once. Give each output column a unique name. Use Show technical columns to inspect hidden keys.";
+        foreach (var id in _selectedTables.Where(id => !_selections.Keys.Any(c => c.MappingId == id)))
+            yield return $"Select at least one column from {_preview.Columns.FirstOrDefault(c => c.MappingId == id)?.Table}, or deselect the table.";
+        if (_scheduleType != ScheduleType.Manual && (_scheduleType != ScheduleType.Interval || _intervalSeconds <= 0))
+            yield return "Choose Manual or an Interval greater than zero seconds.";
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedDatabase == DatabaseId && _loadedSource == SourceTable) return;
+        _loadedDatabase = DatabaseId;
+        _loadedSource = SourceTable;
+        string name = SourceTable.Split('.').Last();
+        if (name.StartsWith("STG_", StringComparison.OrdinalIgnoreCase) || name.StartsWith("HUB_", StringComparison.OrdinalIgnoreCase) || name.StartsWith("SAT_", StringComparison.OrdinalIgnoreCase)) name = name[4..];
+        _target = "MART_" + name;
+        _createNewTable = true;
+        _database = null;
+        _targetTables = [];
+        _targetColumns = [];
+        _loadingTarget = false;
+        ++_targetVersion;
+        await LoadPreviewAsync(null);
+    }
+    private async Task ChangeTargetModeAsync()
+    {
+        int version = ++_targetVersion;
+        _target = string.Empty;
+        _targetTables = [];
+        _targetColumns = [];
+        foreach (var pair in _selections) pair.Value.TargetColumn = _createNewTable ? pair.Key.Column : string.Empty;
+        _error = null;
+        _loadingTarget = !_createNewTable;
+        if (_createNewTable) return;
+        try
+        {
+            var database = (await Api.GetDatabasesAsync("datavault", _lifetime.Token)).Single(d => d.Id == DatabaseId);
+            var tables = await Api.GetTablesAsync(database, _lifetime.Token);
+            if (!_disposed && version == _targetVersion) { _database = database; _targetTables = tables; }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) { if (!_disposed && version == _targetVersion) _error = ex.Message; }
+        finally { if (!_disposed && version == _targetVersion) _loadingTarget = false; }
+    }
+    private async Task LoadTargetColumnsAsync()
+    {
+        int version = ++_targetVersion;
+        _targetColumns = [];
+        foreach (var selection in _selections.Values) selection.TargetColumn = string.Empty;
+        _loadingTarget = false;
+        if (_createNewTable || _database == null || !_targetTables.Contains(_target)) return;
+        _loadingTarget = true;
+        _error = null;
+        try
+        {
+            var schema = await Api.GetColumnsAsync(_database, _target, _lifetime.Token);
+            if (!_disposed && version == _targetVersion)
+                _targetColumns = schema.Columns.Where(c => !c.IsGenerated && !c.IsComputed && !c.IsIdentity && !c.IsAutoIncrement).Select(c => c.Name).ToList();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) { if (!_disposed && version == _targetVersion) _error = ex.Message; }
+        finally { if (!_disposed && version == _targetVersion) _loadingTarget = false; }
+    }
+    private async Task ChangeHubAsync(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var id)) await LoadPreviewAsync(id == Guid.Empty ? null : id);
+    }
+    private async Task LoadPreviewAsync(Guid? hub)
+    {
+        int version = ++_version;
+        _loading = true;
+        _error = null;
+        _selections.Clear();
+        try
+        {
+            var preview = await Api.GetMartPreviewAsync(DatabaseId, SourceTable, hub, _lifetime.Token);
+            if (!_disposed && version == _version) ApplyPreview(preview);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) { if (!_disposed && version == _version) { _preview = new(); _error = ex.Message; } }
+        finally { if (!_disposed && version == _version) _loading = false; }
+    }
+    private void ApplyPreview(GXMartPreview preview)
+    {
+        _preview = preview;
+        _selections.Clear();
+        _selectedTables.Clear();
+        foreach (var column in preview.Columns.Where(c => c.IsKey)) ToggleColumn(column, true);
+        if (_createNewTable)
+            foreach (var column in preview.Columns.Where(c => c.ObjectType == DataVaultObjectType.Satellite &&
+                !c.IsKey && !c.RequiresAggregation && !IsTechnicalColumn(c.Column) &&
+                !c.Column.EndsWith("HashDiff", StringComparison.OrdinalIgnoreCase) &&
+                !c.Column.EndsWith("HASH_DIFF", StringComparison.OrdinalIgnoreCase)))
+            {
+                string entity = column.Table.Split('.').Last();
+                if (entity.StartsWith("SAT_", StringComparison.OrdinalIgnoreCase)) entity = entity[4..];
+                if (entity.Length > 0 && column.Column.Contains(entity, StringComparison.OrdinalIgnoreCase) &&
+                    !_selections.Values.Any(c => string.Equals(c.TargetColumn, column.Column, StringComparison.OrdinalIgnoreCase)))
+                    ToggleColumn(column, true);
+            }
+    }
+    private void ToggleColumn(GXMartColumnOption column, bool selected)
+    {
+        if (selected)
+        {
+            _selectedTables.Add(column.MappingId);
+            _selections.TryAdd(column, new() { MappingId = column.MappingId, Column = column.Column, TargetColumn = _createNewTable ? column.Column : string.Empty });
+        }
+        else if (!column.IsKey) _selections.Remove(column);
+    }
+    private void SelectAllColumns()
+    {
+        if (_loading || _loadingTarget || _saving) return;
+        _showTechnicalColumns = true;
+        var used = _selections.Values.Select(s => s.TargetColumn).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in _preview.Columns)
+        {
+            _selectedTables.Add(column.MappingId);
+            if (_selections.ContainsKey(column)) continue;
+            string target;
+            if (_createNewTable)
+            {
+                var preferred = !used.Contains(column.Column) ? column.Column : column.TargetColumn;
+                if (string.IsNullOrWhiteSpace(preferred)) preferred = column.Column;
+                target = preferred;
+                for (int suffix = 2; used.Contains(target); ++suffix) target = $"{preferred}_{suffix}";
+            }
+            else
+            {
+                target = _targetColumns.FirstOrDefault(name => !used.Contains(name) &&
+                    string.Equals(name, column.Column, StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+            }
+            _selections.Add(column, new() { MappingId = column.MappingId, Column = column.Column, TargetColumn = target });
+            used.Add(target);
+        }
+        _error = null;
+    }
+    private void ToggleTable(Guid mappingId, bool selected)
+    {
+        if (selected) _selectedTables.Add(mappingId);
+        else if (!_preview.Columns.Any(c => c.MappingId == mappingId && c.IsKey))
+        {
+            _selectedTables.Remove(mappingId);
+            foreach (var column in _selections.Keys.Where(c => c.MappingId == mappingId).ToList())
+                _selections.Remove(column);
+        }
+    }
+    private GXCreateMartRequest BuildRequest() => new()
+    {
+        SourceTable = SourceTable,
+        TargetTable = _target.Trim(),
+        UseExistingTable = !_createNewTable,
+        Schedule = new() { Type = _scheduleType, IntervalSeconds = _scheduleType == ScheduleType.Interval ? _intervalSeconds : null },
+        Definition = new()
+        {
+            HubMappingId = _preview.HubMappingId,
+            Columns = _selections.Values.Select(c => new GXMartColumnSelection
+            { MappingId = c.MappingId, Column = c.Column, TargetColumn = c.TargetColumn.Trim(), Aggregation = c.Aggregation }).ToList()
+        }
+    };
+    private async Task CreateAsync()
+    {
+        if (_loading || _loadingTarget || _saving) return;
+        if (!CanCreate) { _error = string.Join(" ", CreationErrors()); return; }
+        _saving = true;
+        _error = null;
+        try
+        {
+            var result = await Api.CreateMartAsync(DatabaseId, BuildRequest(), _lifetime.Token);
+            if (!_disposed) await OnCreated.InvokeAsync(result);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) { if (!_disposed) _error = ex.Message; }
+        finally { _saving = false; }
+    }
+    private async Task CancelAsync() { if (!_saving) await OnCancel.InvokeAsync(); }
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}
+
+
+
+
+
+

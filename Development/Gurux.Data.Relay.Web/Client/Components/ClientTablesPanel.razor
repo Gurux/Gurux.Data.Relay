@@ -1,0 +1,806 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+@using Gurux.Data.Relay.Shared
+@using System.Text.Json
+@using Gurux.Data.Relay.Shared.Enums
+@using Gurux.Data.Relay.Web.Client.Enums
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="client"
+            Kinds="@(GXRelayChangeKind.Configuration | GXRelayChangeKind.State)"
+            IsEditing="@(() => _action != CrudAction.None || _schemaDialog || _schemaBusy)"
+            OnChanged="LoadAsync"
+            OnStateChanged="RefreshStateAsync">
+    <section class="panel">
+        @if (_schemaDialog)
+        {
+            <GXValidationDialog Model="@this" Title="Import database settings" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseSchemaImport">
+                <p>Select a client settings JSON file to replace the table settings and transport routes for @_schemaDatabaseLabel.</p>
+                <InputFile OnChange="ImportSchemaAsync" accept=".json,application/json" disabled="@_schemaBusy" />
+                @if (!string.IsNullOrEmpty(_schemaError))
+                {
+                    <p class="text-danger" role="alert">@_schemaError</p>
+                }
+            </GXValidationDialog>
+        }
+        @if (_describedSchema is not null)
+        {
+            <div class="table-structure-dialog">
+                <GXValidationDialog Model="@this" Title="@($"Table structure: {_describedSchema}")" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseDescription">
+                    <TableStructure Schema="_describedSchema" />
+                </GXValidationDialog>
+            </div>
+        }
+        <h2>@(_action == CrudAction.Create ? "Add table" : _action == CrudAction.Update ? "Edit table" : _action == CrudAction.Delete ? "Delete table" : "Client Tables")</h2>
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <p class="notice" role="alert">@_message</p>
+        }
+        @if (_action == CrudAction.None)
+        {
+            @if (_schemaExportUri is not null)
+            {
+                <a class="btn btn-outline-success" href="@_schemaExportUri" download="@_schemaExportFileName">Download database settings</a>
+            }
+            <div class="actions-row">
+                <label>Database</label>
+                <GXInputDropdown TValue="GXDatabase" @key="_settings" class="form-select rows-input" Items="_databases"
+                                 @bind-Value="_activeDatabase" @bind-Value:after="OnDatabaseChanged">
+                    <Template Context="database">@GetDatabaseLabel(database, _databases.IndexOf(database))</Template>
+                </GXInputDropdown>
+            </div>
+            <MenuControl RightCorner="true">
+                <ChildContent>
+                    <MenuItem Text="Add..." Image="oi oi-plus" Id="add" OnClick="() => StartNewFromSourceAsync(string.Empty)" />
+                    <MenuItem Text="Import database settings" Image="oi oi-data-transfer-download" Id="import-schema" OnClick="OpenSchemaImport" />
+                </ChildContent>
+            </MenuControl>
+            <GXTable Id="@($"{_gxTableIdPrefix}-2")" TItem="GXTable" Context="table"
+                     @ref="_table"
+                     @bind-Active="_activeTable"
+                     ShowAllUsers="false"
+                     ShowRemoved="false"
+                     OnSearch="Updated"
+                     ItemsProvider="GetTableItems">
+                <FilterContent>
+                    <Fh id="tables-name">
+                        <Search class="form-control"
+                                placeholder="Filter by table name..."
+                                id="tables-name-search"
+                                LastValue="true"
+                                @bind-Value="@_filter.Name"
+                                OnValueChanged="@(async (e) => await Updated())" />
+                    </Fh>
+                    <Fh />
+                    <Fh />
+                    <Fh />
+                </FilterContent>
+                <HeaderContent>
+                    <th>Name</th>
+                    <th>Schedule</th>
+                    <th>Last Transferred</th>
+                    <th>Next Transfer Time</th>
+                </HeaderContent>
+                <ItemContent>
+                    <td><button class="btn btn-link" @onclick="() => OpenEditDialogAsync(table)">@table.Name</button></td>
+                    <td>@table.Schedule.Type</td>
+                    <td>@(table.LastTransferred?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td>
+                    <td>@(table.NextTransferTime?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td>
+                </ItemContent>
+                <MenuContent>
+                    <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => OpenEditDialogAsync(_activeTable)" />
+                    <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="@ConfirmRemoveTable" />
+                    <ContextMenuItem Text="Test server connection" Image="oi oi-pulse" OnClick="@PingAsync" />
+                    <ContextMenuItem Text="Send Schema" Image="oi oi-data-transfer-upload" OnClick="@SendSchemaAsync" />
+                    <ContextMenuItem Text="Describe" Image="oi oi-list-rich" OnClick="@DescribeAsync" />
+                    <ContextMenuItem Text="Export database settings" Image="oi oi-data-transfer-upload" OnClick="ExportSchemaAsync" />
+                    <ContextMenuItem Text="Import database settings" Image="oi oi-data-transfer-download" OnClick="OpenSchemaImport" />
+                </MenuContent>
+            </GXTable>
+        }
+        else if (_action == CrudAction.Delete && _activeTable != null)
+        {
+            <p><strong>Name:</strong> @_activeTable.Name</p>
+            <p><strong>Columns:</strong> @_activeTable.Columns.Count</p>
+            <p><strong>Keys:</strong> @_activeTable.Keys.Count</p>
+            <button class="btn btn-danger" disabled="@_saving" @onclick="OnRemoveDialogConfirmedAsync">Delete table</button>
+            <button class="btn btn-secondary" disabled="@_saving" @onclick="OnRemoveDialogCancelledAsync">Cancel</button>
+        }
+        else if (_activeTable != null && (_action is CrudAction.Create or CrudAction.Update))
+        {
+            @if (_action == CrudAction.Create && _availableTables.Count == 0)
+            {
+                <p class="text-danger" role="alert">No tables found in the selected database. Create a table in the database first.</p>
+            }
+            <fieldset disabled="@_saving">
+                <EditForm EditContext="@TopMenu.EditContext">
+                    <div class="mb-2">
+                        <h3>Configured tables</h3>
+                        <TabControl>
+                            <TabPage Text="Table">
+                                <HelpContext Topic="table" />
+                                @if (_action == CrudAction.Update)
+                                {
+                                    <InputText class="form-control" @bind-Value="_activeTable.Name" />
+                                }
+                                else
+                                {
+                                    <DropdownSearch class="form-control"
+                                                    Id="table-name"
+                                                    Immediate="true"
+                                                    @bind-Value="_activeTable.Name"
+                                                    @bind-Value:after="OnTableChanged"
+                                                    Items="_availableTables" />
+                                }
+                                <div class="actions-row mt-2">
+                                    <button type="button" class="btn btn-outline-primary btn-sm" @onclick="SelectAllColumns">Select all columns</button>
+                                </div>
+
+                                <div class="table-responsive mt-2">
+                                    <GXTable Id="@($"{_gxTableIdPrefix}-1")" @key="_activeTable" @ref="_columnsTable"
+                                             TItem="string" Context="column" ShowAllData="true"
+                                             ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetConfiguredColumnItems">
+                                        <HeaderContent>
+                                            <th>Name</th><th>Transfer</th><th>Key</th>
+                                        </HeaderContent>
+                                        <ItemContent>
+                                            <td>@column</td>
+                                            <td>
+                                                <input type="checkbox" aria-label="@($"Transfer {column}")"
+                                                       checked="@_selectedColumns.Contains(column)"
+                                                       @onchange="(e) => ToggleColumn(column, e.Value)" />
+                                            </td>
+                                            <td>
+                                                <input type="checkbox" aria-label="@($"Key {column}")"
+                                                       checked="@_selectedKeys.Contains(column)"
+                                                       @onchange="(e) => ToggleKey(column, e.Value)" />
+                                            </td>
+                                        </ItemContent>
+                                    </GXTable>
+                                </div>
+                            </TabPage>
+                            <TabPage Text="Tracking">
+                                <HelpContext Topic="tracking" />
+                                <div class="mb-2">
+                                    <label><Gurux.UI.Components.InputCheckbox @bind-Value="_activeTable.DeleteSourceRowsAfterTransfer" /> Delete source rows after transfer</label>
+                                    <p>Deletes acknowledged rows from the source after all destinations accept the batch. Requires selected primary-key columns.</p>
+                                    <label>Record source (optional override)</label>
+                                    <InputText class="form-control" @bind-Value="_activeTable.RecordSource" />
+                                    <ValidationMessage For="@(() => _activeTable.RecordSource)" />
+                                    <p>Leave empty to use the database record source.</p>
+                                    <label>Incremental column (optional)</label>
+                                    <label>@_activeTable.IncrementalColumn</label>
+                                    <DropdownSearch class="form-control"
+                                                    NullText="None"
+                                                    @bind-Value="_activeTable.IncrementalColumn"
+                                                    Items="@(_activeTable.Columns.Prepend(string.Empty))">
+                                    </DropdownSearch>
+                                </div>
+
+                                <div class="mb-2">
+                                    <label>Change tracking</label>
+                                    <GXInputDropdown class="form-select" @bind-Value="_changeTrackingType" />
+                                </div>
+
+                                @if (_changeTrackingType == ChangeTrackingType.ContentHash)
+                                {
+                                    <label>Hash columns (comma-separated, empty = all transferred columns)</label>
+                                    <InputText class="form-control" @bind-Value="_activeTable.ChangeTracking.HashColumns" />
+                                    <p class="form-text">Requires unique, non-null keys. Every check reads all source rows and sends new or changed rows. Source deletions are not transferred. Leave Incremental column empty and disable Delete source rows after transfer. Reset the checkpoint when changing keys or hash columns.</p>
+                                }
+                                @if (_changeTrackingType == ChangeTrackingType.LastRow || _changeTrackingType == ChangeTrackingType.Version)
+                                {
+                                    <div class="mb-2">
+                                        <label>Tracking column</label>
+                                        <DropdownSearch class="form-control"
+                                                        NullText="None"
+                                                        @bind-Value="_activeTable.ChangeTracking.Column"
+                                                        Items="@(_activeTable.Columns.Prepend(string.Empty))">
+                                        </DropdownSearch>
+                                    </div>
+                                }
+                                @if (_changeTrackingType == ChangeTrackingType.Timestamp)
+                                {
+                                    <div class="mb-2">
+                                        <label>Created column</label>
+                                        <DropdownSearch class="form-control"
+                                                        NullText="None"
+                                                        @bind-Value="_activeTable.ChangeTracking.CreatedColumn"
+                                                        Items="@(_activeTable.Columns.Prepend(string.Empty))">
+                                        </DropdownSearch>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label>Updated column</label>
+                                        <DropdownSearch class="form-control" NullText="None"
+                                                        @bind-Value="_activeTable.ChangeTracking.UpdatedColumn"
+                                                        Items="@(_activeTable.Columns.Prepend(string.Empty))">
+                                        </DropdownSearch>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label>Deleted column</label>
+                                        <DropdownSearch class="form-control" NullText="None"
+                                                        @bind-Value="_activeTable.ChangeTracking.DeletedColumn"
+                                                        Items="@(_activeTable.Columns.Prepend(string.Empty))">
+                                        </DropdownSearch>
+                                    </div>
+                                }
+                            </TabPage>
+                            <TabPage Text="Schedule">
+                                <HelpContext Topic="schedule" />
+                                <div class="mb-2">
+                                    <label>Schedule</label>
+                                    <GXInputDropdown class="form-select"
+                                                     @bind-Value="_scheduleType"
+                                                     @bind-Value:after="OnScheduleChanged">
+                                    </GXInputDropdown>
+                                </div>
+                                @if (_scheduleType == ScheduleType.Interval)
+                                {
+                                    <div class="mb-2">
+                                        <label>Interval seconds</label>
+                                        <InputIntegerTimeSpan @bind-Value="_activeTable.Schedule.IntervalSeconds" />
+                                    </div>
+                                }
+                                @if (_scheduleType == ScheduleType.Daily)
+                                {
+                                    <div class="mb-2">
+                                        <label>Daily time</label>
+                                        <GXInputTimeSpan class="form-control" @bind-Value="DailyScheduleTime" LastValue="false" />
+                                    </div>
+                                }
+                                @if (_scheduleType == ScheduleType.Cron)
+                                {
+                                    <div class="mb-2">
+                                        <label>Cron expression</label>
+                                        <InputText class="form-control" @bind-Value="_activeTable.Schedule.Expression" @oninput="@(e => { _activeTable.Schedule.Expression = e.Value?.ToString() ?? string.Empty; ValidateCron(); })" @bind-Value:after="ValidateCron" />
+                                        <small>Seconds minutes hours day month weekday (UTC). Example: 0 * * * * * — every minute.</small>
+                                        @if (_cronError != null)
+                                        {
+                                            <p class="text-danger" role="alert">@_cronError</p>
+                                        }
+                                    </div>
+                                }
+                            </TabPage>
+                        </TabControl>
+                    </div>
+                </EditForm>
+            </fieldset>
+        }
+    </section>
+
+</GXLiveView>
+@code {
+    private readonly string _gxTableIdPrefix = "clienttablespanel-" + Guid.NewGuid().ToString("N");
+    private TimeSpan? DailyScheduleTime
+    {
+        get => TimeOnly.TryParse(_activeTable?.Schedule.Time, out var time) ? time.ToTimeSpan() : null;
+        set { if (_activeTable != null) _activeTable.Schedule.Time = value?.ToString(@"hh\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture) ?? ""; }
+    }
+
+    private static string FormatColumnOption(string? value) => string.IsNullOrEmpty(value) ? "None" : value;
+
+    [Inject]
+    public IGXTopMenu TopMenu { get; set; } = default!;
+
+    private GXSettings _settings = new();
+    private readonly List<GXDatabase> _databases = [];
+    private readonly List<GXTable> _configuredTables = [];
+    private readonly List<string> _availableTables = [];
+    private int _sourceTablesVersion;
+    //Selected columns.
+    private readonly HashSet<string> _selectedColumns = new(StringComparer.OrdinalIgnoreCase);
+    //Selected keys.
+    private readonly HashSet<string> _selectedKeys = new(StringComparer.OrdinalIgnoreCase);
+    private GXDatabase? _activeDatabase;
+    private GXTable? _activeTable;
+    private string? _originalTableName;
+    private GXTable<GXTable>? _table;
+    private GXTable<string>? _columnsTable;
+    private CrudAction _action;
+    private bool _saving;
+    private string? _message;
+    private ChangeTrackingType _changeTrackingType { get => _activeTable?.ChangeTracking.Type ?? ChangeTrackingType.None; set { if (_activeTable != null) _activeTable.ChangeTracking.Type = value; } }
+    private ScheduleType _scheduleType;
+    private string? _cronError;
+    private readonly GXTable _filter = new();
+    private void ValidateCron() => _cronError = _scheduleType == ScheduleType.Cron
+        ? GXCronSchedule.Validate(_activeTable?.Schedule.Expression) : null;
+
+    private void OnScheduleChanged()
+    {
+        if (_activeTable == null)
+        {
+            return;
+        }
+        _activeTable.Schedule.Type = _scheduleType;
+        if (_scheduleType == ScheduleType.Cron && string.IsNullOrWhiteSpace(_activeTable.Schedule.Expression))
+        {
+            _activeTable.Schedule.Expression = GXCronSchedule.DefaultExpression;
+        }
+        ValidateCron();
+    }
+
+    private ValueTask<ItemsProviderResult<GXTable>> GetTableItems(GXItemsProviderRequest request)
+    {
+        string? name = _filter.Name?.Trim();
+        var tables = string.IsNullOrEmpty(name)
+            ? _configuredTables.ToList()
+            : _configuredTables.Where(table => table.Name?.Contains(name, StringComparison.OrdinalIgnoreCase) == true).ToList();
+        return ValueTask.FromResult(new ItemsProviderResult<GXTable>(tables, tables.Count));
+    }
+    private ValueTask<ItemsProviderResult<string>> GetConfiguredColumnItems(GXItemsProviderRequest request)
+    {
+        var columns = _activeTable?.Columns.ToArray() ?? [];
+        return ValueTask.FromResult(new ItemsProviderResult<string>(columns, columns.Length));
+    }
+    private ValueTask<ItemsProviderResult<string>> GetSourceTableItems(GXItemsProviderRequest request)
+        => ValueTask.FromResult(new ItemsProviderResult<string>(_availableTables, _availableTables.Count));
+    private async Task Updated()
+    {
+        if (_table != null)
+        {
+            await _table.RefreshDataAsync(true);
+        }
+    }
+
+    protected override Task OnInitializedAsync()
+    {
+        return LoadAsync();
+    }
+
+    private void ShowEditMenu()
+    {
+        TopMenu.Clear();
+        TopMenu.EditContext = new EditContext(_activeTable!);
+        TopMenu.EditContext.MarkAsUnmodified();
+        TopMenu?.AddMenuItems([new GXMenuItem("Save", "Save",
+    EventCallback.Factory.Create(this, OnEditDialogConfirmedAsync),
+    UI.Components.Enums.EnableStyle.Modified),
+            new GXMenuItem("Cancel", "Cancel",
+            EventCallback.Factory.Create(this, OnEditDialogCancelledAsync))]);
+    }
+
+    private async Task RefreshStateAsync()
+    {
+        try
+        {
+            var settings = _settings;
+            var state = await Api.GetStateAsync("client", CancellationToken.None);
+            if (!ReferenceEquals(settings, _settings) || _action != CrudAction.None) return;
+            foreach (var database in _databases)
+            {
+                int index = settings.Databases.FindIndex(d => d.Id == database.Id);
+                foreach (var table in database.Tables ?? [])
+                {
+                    string name = settings.Databases.Count == 1 ? table.Name : $"source-{index + 1}:{table.Name}";
+                    var row = index < 0 ? null : state.Tables?.FirstOrDefault(t =>
+                        (t.DatabaseIndex == null || t.DatabaseIndex == index) && string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+                    table.LastTransferred = row?.LastSuccessfulTransfer;
+                    table.NextTransferTime = table.Schedule.Type is ScheduleType.Manual or ScheduleType.DatabaseChange ? null : row?.NextTransferTime;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = $"Could not refresh state: {ex.Message}";
+        }
+    }
+    private async Task LoadAsync()
+    {
+        Guid? selectedDatabaseId = _activeDatabase?.Id;
+        _settings = await Api.GetSettingsAsync("client", CancellationToken.None);
+        _databases.Clear();
+        var catalog = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
+        _databases.AddRange(catalog.Select(database => _settings.Databases.FirstOrDefault(d => d.Id == database.Id) ?? database));
+        _activeDatabase = _databases.FirstOrDefault(database => database.Id == selectedDatabaseId)
+            ?? _databases.FirstOrDefault();
+        _message = $"Loaded {_databases.Count} client databases.";
+        await OnDatabaseChanged();
+    }
+
+    private async Task LoadAvailableTablesAsync()
+    {
+        if (_activeDatabase == null || _availableTables.Any())
+        {
+            return;
+        }
+        IReadOnlyList<string> names = await Api.GetTablesAsync(_activeDatabase, CancellationToken.None);
+        _availableTables.AddRange(names);
+        ++_sourceTablesVersion;
+        _message = $"Loaded {_availableTables.Count} source tables.";
+    }
+
+    private async Task StartNewFromSourceAsync(string tableName)
+    {
+        if (_activeDatabase == null)
+        {
+            return;
+        }
+        await LoadAvailableTablesAsync();
+        _activeTable = new GXTable
+        {
+            Name = tableName,
+        };
+        _selectedKeys.Clear();
+        _originalTableName = null;
+        _action = CrudAction.Create;
+        _message = null;
+        await EditConfiguredTableAsync(new GXTable { Name = tableName });
+    }
+
+    private async Task EditConfiguredTableAsync(GXTable table)
+    {
+        ShowEditMenu();
+        GXChangeTracking tracking = table.ChangeTracking;
+        _changeTrackingType = tracking.Type;
+        _scheduleType = table.Schedule.Type;
+        OnScheduleChanged();
+        try
+        {
+            await OnTableChanged();
+        }
+        catch (Exception ex)
+        {
+            _message = $"Could not load columns for table {table.Name}: {ex.Message}";
+        }
+    }
+
+    private async Task OpenEditDialogAsync(GXTable? table)
+    {
+        if (table == null)
+        {
+            return;
+        }
+        _originalTableName = table.Name;
+        _activeTable = JsonSerializer.Deserialize<GXTable>(JsonSerializer.Serialize(table))!;
+        _action = CrudAction.Update;
+        await EditConfiguredTableAsync(_activeTable);
+    }
+
+    private void ConfirmRemoveTable()
+    {
+        if (_activeTable == null)
+        {
+            return;
+        }
+        _action = CrudAction.Delete;
+    }
+
+    private bool _sending;
+    private Task PingAsync() => SendTableActionAsync(false);
+    private Task SendSchemaAsync() => SendTableActionAsync(true);
+
+    private async Task SendTableActionAsync(bool schema)
+    {
+        if (_sending || _activeTable == null || _activeDatabase == null) return;
+        int databaseIndex = _settings.Databases.FindIndex(database => database.Id == _activeDatabase.Id);
+        if (databaseIndex < 0)
+        {
+            return;
+        }
+        string tableName = _activeTable.Name;
+        GXClientTableRequest request = new() { DatabaseIndex = databaseIndex, TableName = tableName };
+        _sending = true;
+        _message = schema ? $"Sending schema for {tableName}..." : $"Testing server connection and destination database for {tableName}...";
+        try
+        {
+            if (schema) await Api.SendClientTableSchemaAsync(request, CancellationToken.None);
+            else await Api.PingClientTableAsync(request, CancellationToken.None);
+            _message = schema ? $"Schema for {tableName} acknowledged by all configured servers."
+                : $"Server connection and destination database configuration verified for {tableName} on all configured servers.";
+        }
+        catch (Exception ex)
+        {
+            _message = schema ? $"Could not send schema for {tableName}: {ex.Message}"
+                : $"Server connection test failed for {tableName}: {ex.Message}";
+        }
+        finally { _sending = false; }
+    }
+
+    private GXTableSchema? _describedSchema;
+    private bool _describing;
+
+    private async Task DescribeAsync()
+    {
+        if (_describing || _activeTable is null || _activeDatabase is null) return;
+        var database = _activeDatabase;
+        string name = _activeTable.Name;
+        _describing = true;
+        _describedSchema = null;
+        _message = null;
+        try
+        {
+            var schema = await Api.GetColumnsAsync(database, name, CancellationToken.None);
+            if (string.IsNullOrEmpty(schema.Name)) schema.Name = name;
+            _describedSchema = schema;
+        }
+        catch (Exception ex) { _message = $"Could not describe {name}: {ex.Message}"; }
+        finally { _describing = false; }
+    }
+
+    private void CloseDescription() => _describedSchema = null;
+
+    private bool _schemaDialog;
+    private bool _schemaBusy;
+    private Guid _schemaDatabaseId;
+    private string? _schemaDatabaseLabel;
+    private string? _schemaError;
+    private string? _schemaExportUri;
+    private string? _schemaExportFileName;
+
+    private async Task ExportSchemaAsync()
+    {
+        if (_schemaBusy || _activeDatabase is null) return;
+        var databaseId = _activeDatabase.Id;
+        string name = GetDatabaseLabel(_activeDatabase, _databases.IndexOf(_activeDatabase));
+        _schemaBusy = true;
+        _schemaExportUri = null;
+        try
+        {
+            var settings = await Api.GetSettingsAsync("client", CancellationToken.None);
+            string json = GXClientDatabaseSettings.Export(settings, databaseId);
+            _schemaExportFileName = $"{name}.client.settings.json";
+            _schemaExportUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(json);
+            _message = "Database settings export ready. Select Download database settings to save the JSON file.";
+        }
+        catch (Exception ex) { _message = $"Could not export database settings: {ex.Message}"; }
+        finally { _schemaBusy = false; }
+    }
+
+    private void OpenSchemaImport()
+    {
+        if (_schemaBusy) return;
+        if (_activeDatabase is null)
+        {
+            _message = "Select a database first.";
+            return;
+        }
+        _schemaDatabaseId = _activeDatabase.Id;
+        _schemaDatabaseLabel = GetDatabaseLabel(_activeDatabase, _databases.IndexOf(_activeDatabase));
+        _schemaError = null;
+        _schemaDialog = true;
+    }
+
+    private void CloseSchemaImport()
+    {
+        if (!_schemaBusy) _schemaDialog = false;
+    }
+
+    private async Task ImportSchemaAsync(InputFileChangeEventArgs args)
+    {
+        if (_schemaBusy) return;
+        _schemaBusy = true;
+        _schemaError = null;
+        try
+        {
+            await using var stream = args.File.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+            var current = await Api.GetSettingsAsync("client", CancellationToken.None);
+            var database = _databases.Single(d => d.Id == _schemaDatabaseId);
+            var pending = GXClientDatabaseSettings.Import(current, database, json);
+            await Api.SaveSettingsAsync("client", pending, CancellationToken.None);
+            _schemaDialog = false;
+            try { await LoadAsync(); }
+            catch (Exception ex)
+            {
+                _message = $"Database settings imported, but the table list could not be refreshed: {ex.Message}";
+                return;
+            }
+            _message = "Database settings imported.";
+        }
+        catch (Exception ex) { _schemaError = $"Could not import database settings: {ex.Message}"; }
+        finally { _schemaBusy = false; }
+    }
+
+    private Task OnEditDialogConfirmedAsync() => PersistTableAsync(false);
+    private Task OnRemoveDialogConfirmedAsync() => PersistTableAsync(true);
+    private Task OnEditDialogCancelledAsync()
+    {
+        if (_saving) return Task.CompletedTask;
+        TopMenu?.Clear();
+        _activeTable = null;
+        _action = CrudAction.None;
+        return Task.CompletedTask;
+    }
+    private Task OnRemoveDialogCancelledAsync() => OnEditDialogCancelledAsync();
+
+    private async Task PersistTableAsync(bool delete)
+    {
+        if (_saving) return;
+        if (_activeTable == null || _activeDatabase == null)
+        {
+            return;
+        }
+        if (!delete)
+        {
+            ValidateCron();
+            if (_cronError != null) { _message = _cronError; return; }
+        }
+        try
+        {
+            string originalName = delete ? _activeTable.Name : _originalTableName ?? _activeTable.Name;
+            if ((delete || !string.Equals(originalName, _activeTable.Name, StringComparison.Ordinal)) &&
+                _settings.Transports.Any(t => t.Tables.Any(r => r.DatabaseId == _activeDatabase.Id && string.Equals(r.Table, originalName, StringComparison.OrdinalIgnoreCase))))
+                throw new InvalidOperationException("Remove this table from its transports before deleting or renaming it.");
+            GXSettings pending = JsonSerializer.Deserialize<GXSettings>(JsonSerializer.Serialize(_settings))!;
+            GXDatabase? database = pending.Databases.SingleOrDefault(d => d.Id == _activeDatabase.Id);
+            if (database is null)
+            {
+                database = JsonSerializer.Deserialize<GXDatabase>(JsonSerializer.Serialize(_activeDatabase))!;
+                pending.Databases.Add(database);
+            }
+            database.Tables ??= [];
+            if (delete || _action == CrudAction.Update)
+                database.Tables.RemoveAll(t => string.Equals(t.Name, originalName, StringComparison.OrdinalIgnoreCase));
+            if (!delete)
+            {
+                _activeTable.Keys = _selectedKeys.ToList();
+                database.Tables.Add(_activeTable);
+            }
+            _saving = true;
+            await Api.SaveSettingsAsync("client", pending, CancellationToken.None);
+            _activeDatabase.Tables = database.Tables;
+            GXEntityMetadata.ApplySaved(pending, _settings);
+            _settings = pending;
+            LoadConfiguredTablesForCurrentDatabase();
+            _action = CrudAction.None;
+            _message = "Client settings saved.";
+            TopMenu?.Clear();
+        }
+        catch (Exception ex)
+        {
+            LoadConfiguredTablesForCurrentDatabase();
+            _message = ex.Message;
+        }
+        finally { _saving = false; }
+    }
+
+    private async Task LoadColumnNamesAsync(string tableName)
+    {
+        if (_activeTable == null || _activeDatabase == null)
+        {
+            return;
+        }
+        GXTableSchema schema = await Api.GetColumnsAsync(_activeDatabase, tableName, CancellationToken.None);
+        if (_action == CrudAction.Create)
+        {
+            _activeTable.Keys = schema.Columns
+                .Where(column => column.IsPrimaryKey && !string.IsNullOrWhiteSpace(column.Name))
+                .Select(column => column.Name)
+                .ToList();
+        }
+        if (schema.Columns.Count > 0)
+        {
+            foreach (GXColumnSchema column in schema.Columns)
+            {
+                string? name = column.Name;
+                if (!string.IsNullOrWhiteSpace(name) && _activeTable.Columns.Contains(name) == false)
+                {
+                    _activeTable.Columns.Add(name);
+                }
+            }
+        }
+    }
+
+    private void ToggleColumn(string columnName, object? value)
+    {
+        if (value is true)
+        {
+            _selectedColumns.Add(columnName);
+        }
+        else
+        {
+            _selectedColumns.Remove(columnName);
+            _selectedKeys.Remove(columnName);
+        }
+    }
+    private void ToggleKey(string columnName, object? value)
+    {
+        if (value is true)
+        {
+            _selectedColumns.Add(columnName);
+            _selectedKeys.Add(columnName);
+        }
+        else
+        {
+            _selectedKeys.Remove(columnName);
+        }
+    }
+    private void SelectAllColumns() => _selectedColumns.UnionWith(_activeTable!.Columns);
+
+    private async Task OnDatabaseChanged()
+    {
+        _schemaExportUri = null;
+        _activeTable = null;
+        _availableTables.Clear();
+        LoadConfiguredTablesForCurrentDatabase();
+        try { await LoadAvailableTablesAsync(); }
+        catch (Exception ex) { _message = $"Could not load source tables: {ex.Message}"; }
+        await Updated();
+    }
+
+    private async Task OnTableChanged()
+    {
+        _selectedColumns.Clear();
+        _selectedKeys.Clear();
+        if (_action == CrudAction.Create && _activeTable != null)
+        {
+            _activeTable.Columns.Clear();
+            _activeTable.Keys.Clear();
+        }
+        if (!string.IsNullOrWhiteSpace(_activeTable?.Name))
+        {
+            try
+            {
+                await LoadColumnNamesAsync(_activeTable.Name);
+                _selectedColumns.UnionWith(_activeTable!.Columns);
+                _selectedKeys.UnionWith(_activeTable.Keys);
+            }
+            catch (Exception ex)
+            {
+                _message = $"Could not load columns for table {_activeTable?.Name}: {ex.Message}";
+            }
+        }
+        // GXTable caches its provider result. Refresh it after the asynchronous schema load,
+        // including when the new table has the same number of columns or selection is cleared.
+        if (_columnsTable is not null)
+        {
+            await _columnsTable.RefreshDataAsync(true);
+        }
+    }
+
+    private void LoadConfiguredTablesForCurrentDatabase()
+    {
+        _configuredTables.Clear();
+        _configuredTables.AddRange(_activeDatabase?.Tables ?? []);
+    }
+
+    private static string GetDatabaseLabel(GXDatabase database, int index)
+        => string.IsNullOrWhiteSpace(database.Description)
+            ? $"{database.Type}"
+            : $"{database.Description} ({database.Type})";
+}
+
+
+
+
+
+
+
+
+
+
+

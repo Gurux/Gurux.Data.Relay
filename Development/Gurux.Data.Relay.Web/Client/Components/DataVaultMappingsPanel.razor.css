@@ -1,0 +1,13 @@
+.mapping-list-table {
+    overflow: visible;
+}
+
+/* Anchor the row menu to its trigger cell instead of the page. */
+.mapping-list-table ::deep tbody > tr > td:last-child {
+    position: relative;
+}
+
+.mapping-list-table ::deep .contextmenu {
+    right: 0;
+    top: 100%;
+}

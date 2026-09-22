@@ -1,0 +1,264 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Log
+@using Gurux.Data.Relay.Web.Client.Enums
+@using Microsoft.Extensions.Logging
+@using System.Diagnostics
+@using Gurux.UI.Components.Table
+@using Gurux.UI.Components.ContextMenu
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="@Mode" Kinds="@(GXRelayChangeKind.Configuration | GXRelayChangeKind.Events)" IsEditing="@(() => _action != CrudAction.None)" AnnounceEditing="false" OnChanged="ReloadLiveAsync">
+
+    <section class="panel">
+        <h2>@Title</h2>
+
+        @if (_action != CrudAction.None && !string.IsNullOrEmpty(_message))
+        {
+            <p class="notice" role="alert">@_message</p>
+        }
+        @if (_action == CrudAction.None)
+        {
+            <div class="actions-row">
+                <button class="btn btn-outline-danger" @onclick="OpenCleanDialog">Clean</button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <p class="notice">@_message</p>
+            }
+
+            <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXEventLog" Context="row" @ref="_table" @bind-Active="_activeEvent"
+                     ShowAllData="false" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetEventItems" OnSearch="LoadAsync">
+                <HeaderContent><th>Time</th><th>Database</th><th>Level</th><th>Source</th><th>Message</th><th>Exception/Error</th></HeaderContent>
+                <FilterContent>
+                    <Fh />
+                    <Fh>
+                        <DropdownSearch TValue="GXDatabase?" class="form-control" ShowItemsWhenEmpty="true"
+                                        @bind-Value="_selectedDatabase" @bind-Value:after="OnDatabaseChanged"
+                                        Items="@(_databases.Cast<GXDatabase?>().Prepend(null))"
+                                        Formatter="FormatDatabaseOption" placeholder="All databases">
+                            <Template Context="option">@(FormatDatabaseOption(option))</Template>
+                        </DropdownSearch>
+                    </Fh>
+                    <Fh>
+                        <GXInputDropdown TValue="LogLevel?" @bind-Value="_selectedLevel" @bind-Value:after="LoadAsync"
+                                         title="Minimum level"
+                                         Items="@(Enum.GetValues<LogLevel>().Where(level => level != LogLevel.None).Select(level => (LogLevel?)level).Prepend(null))">
+                            <Template Context="level">@(level?.ToString() ?? "All")</Template>
+                        </GXInputDropdown>
+                    </Fh>
+                    <Fh><Search placeholder="Search Source..." @bind-Value="_filter.Source" /></Fh>
+                    <Fh><Search placeholder="Search Message..." @bind-Value="_filter.Message" /></Fh>
+                    <Fh><Search placeholder="Search Exception/Error..." @bind-Value="_filter.Data" /></Fh>
+                </FilterContent>
+                <ItemContent>
+                    <td>@(row.Timestamp?.ToString("O"))</td>
+                    <td>@GetEventDatabaseLabel(row)</td>
+                    <td>@(row.Level.ToString())</td>
+                    <td>@(row.Source)</td>
+                    <td><button class="btn btn-link" @onclick="() => ReadEvent(row)">@(row.Message)</button></td>
+                    <td>@(row.Data)</td>
+                </ItemContent>
+                <MenuContent><ContextMenuItem Text="View" Image="oi oi-eye" OnClick="() => ReadEvent(_activeEvent)" /></MenuContent>
+            </GXTable>
+            @if (_rows.Count == 0)
+            {
+                <p>No log entries available.</p>
+            }
+        }
+        else if (_action == CrudAction.Read && _activeEvent != null)
+        {
+            <h3>Log entry details</h3>
+            <p><strong>Time:</strong> @(_activeEvent.Timestamp?.ToString("O"))</p>
+            <p><strong>Database:</strong> @GetEventDatabaseLabel(_activeEvent)</p>
+            <p><strong>Level:</strong> @(_activeEvent.Level.ToString())</p>
+            <p><strong>Source:</strong> @(_activeEvent.Source)</p>
+            <pre>@(_activeEvent.Message)</pre>
+            <pre>@(_activeEvent.Data)</pre>
+            <button class="btn btn-secondary" disabled="@_saving" @onclick="CancelCleanAsync">Back</button>
+        }
+        else if (_action == CrudAction.Delete)
+        {
+            <h3>Clean log</h3>
+            <p>Remove all log entries for this mode and selected database? The level and text filters do not limit deletion.</p>
+            <div><strong>Mode:</strong> @Mode</div>
+            <div><strong>Database:</strong> @GetSelectedDatabaseLabel()</div>
+            <div><strong>Filter:</strong> @(_selectedLevel?.ToString() ?? "All")</div>
+            <div><strong>Current rows:</strong> @_rows.Count</div>
+            <div class="actions-row mt-3">
+                <button type="button" class="btn btn-danger" disabled="@_saving" @onclick="ConfirmCleanAsync">OK</button>
+                <button type="button" class="btn btn-secondary" disabled="@_saving" @onclick="CancelCleanAsync">Cancel</button>
+            </div>
+
+        }
+    </section>
+
+
+</GXLiveView>
+@code {
+    private readonly string _gxTableIdPrefix = "modeeventspanel-" + Guid.NewGuid().ToString("N");
+    private string FormatDatabaseOption(GXDatabase? database) => database != null ? GetDatabaseLabel(database, _databases.IndexOf(database)) : "All databases";
+
+    [Parameter, EditorRequired]
+    public string Mode { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    private readonly List<GXEventLog> _rows = [];
+    private readonly List<GXDatabase> _databases = [];
+    private LogLevel? _selectedLevel;
+    private readonly GXEventLog _filter = new GXEventLog();
+
+    private GXDatabase? _selectedDatabase;
+    private string? _message;
+    private CrudAction _action = CrudAction.None;
+    private bool _saving;
+    private GXTable<GXEventLog>? _table;
+    private GXEventLog? _activeEvent;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDatabasesAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _activeEvent = null;
+        if (_table != null) { _table.CurrentPage = 0; await _table.RefreshDataAsync(true); }
+    }
+    private async Task LoadDatabasesAsync()
+    {
+        IReadOnlyList<GXDatabase> databases = await Api.GetDatabasesAsync(Mode, CancellationToken.None);
+        _databases.Clear();
+        _databases.AddRange(databases);
+
+        _selectedDatabase = null;
+    }
+
+    private async Task ReloadLiveAsync()
+    {
+        Guid? selected = _selectedDatabase?.Id;
+        await LoadDatabasesAsync();
+        _selectedDatabase = _databases.Find(db => db.Id == selected);
+        await LoadAsync();
+    }
+
+    private Task OnDatabaseChanged() => LoadAsync();
+    private void OpenCleanDialog()
+    {
+        _action = CrudAction.Delete;
+        _table = null;
+    }
+
+    private async Task ConfirmCleanAsync()
+    {
+        if (_saving) return;
+        _saving = true;
+        try
+        {
+            int deleted = await Api.ClearEventsAsync(Mode, GetSelectedDatabaseIndex(), CancellationToken.None);
+            _action = CrudAction.None;
+            _table = null;
+            await LoadAsync();
+            _message = deleted > 0 ? $"Cleaned {deleted} log entries." : "No log entries were cleaned.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _saving = false; }
+    }
+    private async Task CancelCleanAsync()
+    {
+        _action = CrudAction.None;
+        _table = null;
+        await Task.CompletedTask;
+    }
+
+    private string GetSelectedDatabaseLabel()
+        => FormatDatabaseOption(_selectedDatabase);
+
+    private int? GetSelectedDatabaseIndex()
+    {
+        int index = _selectedDatabase != null ? _databases.IndexOf(_selectedDatabase) : -1;
+        return index >= 0 ? index : null;
+    }
+
+    private async ValueTask<ItemsProviderResult<GXEventLog>> GetEventItems(GXItemsProviderRequest request)
+    {
+        var page = await Api.GetEventPageAsync(Mode, new GXEventPageRequest
+        {
+            StartIndex = request.StartIndex,
+            Count = request.Count,
+            MinimumLevel = _selectedLevel,
+            DatabaseIndex = GetSelectedDatabaseIndex(),
+            Filter = _filter,
+        }, request.CancellationToken);
+        _rows.Clear();
+        _rows.AddRange(page.Items);
+        _activeEvent = null;
+        return new ItemsProviderResult<GXEventLog>(page.Items, page.TotalCount);
+    }
+
+    private async Task FilterUpdatedAsync()
+    {
+        if (_table != null) { _table.CurrentPage = 0; await _table.RefreshDataAsync(true); }
+    }
+    private void ReadEvent(GXEventLog? row)
+    {
+        if (row == null)
+        {
+            return;
+        }
+        _activeEvent = row;
+        _action = CrudAction.Read;
+        _table = null;
+    }
+    private string GetEventDatabaseLabel(GXEventLog row)
+    {
+        int? index = row.DatabaseIndex;
+        return index is int value ? value >= 0 && value < _databases.Count
+            ? GetDatabaseLabel(_databases[value], value) : $"Database {value}" : "General / unknown";
+    }
+
+    private static string GetDatabaseLabel(GXDatabase database, int index)
+    {
+        string? description = database.Description;
+        string? type = database.Type.ToString();
+        return string.IsNullOrWhiteSpace(description) ? type : description;
+    }
+}
+
+
+

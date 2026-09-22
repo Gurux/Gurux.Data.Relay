@@ -1,0 +1,211 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using System.Text
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@inject GXAdminApiClient Api
+<HelpContext Topic="database-schema-import-and-export" />
+
+<GXValidationDialog Model="@this" Title="@(Importing ? "Import schema" : "Export schema")" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseAsync">
+    <p><strong>Database:</strong> @(Database.Description ?? Database.Type.ToString())</p>
+    <fieldset disabled="@_busy">
+        @if (Importing)
+        {
+            <label>Schema JSON file <InputFile OnChange="ReadFileAsync" accept=".json,application/json" /></label>
+        }
+        @if (_rows.Count > 0)
+        {
+            <p>Select the tables to @(Importing ? "import" : "export").</p>
+            <div class="actions-row">
+                <button type="button" class="btn btn-outline-secondary" @onclick="() => SelectAll(true)">Select all</button>
+                <button type="button" class="btn btn-outline-secondary" @onclick="() => SelectAll(false)">Clear selection</button>
+            </div>
+            <GXTable Id="@($"{_gxTableIdPrefix}-1")" @key="_rows" TItem="SchemaRow" Context="row" ShowAllData="true"
+                     ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetRows">
+                <HeaderContent><th>Select</th><th>Table</th><th>Status</th></HeaderContent>
+                <ItemContent>
+                    <td><input type="checkbox" aria-label="@($"Select {row.Name}")" @bind="row.Selected" disabled="@row.Imported" />
+                    <ValidationMessage For="@(() => row.Selected)" /></td>
+                    <td>@row.Name</td>
+                    <td>@row.Status</td>
+                </ItemContent>
+            </GXTable>
+            <button type="button" class="btn btn-primary" disabled="@(!_rows.Any(row => row.Selected && !row.Imported))" @onclick="TransferAsync">
+                @(Importing ? "Import selected" : "Export selected")
+            </button>
+        }
+        <button type="button" class="btn btn-secondary" @onclick="CloseAsync">Close</button>
+    </fieldset>
+    @if (_message is not null)
+    {
+        <p role="status">@_message</p>
+    }
+    @if (_downloadUri is not null)
+    {
+        <a class="btn btn-outline-success" href="@_downloadUri" download="Gurux.Data.Relay.tables.schema.json">Download schema</a>
+    }
+</GXValidationDialog>
+
+@code {
+    private readonly string _gxTableIdPrefix = "databaseschemadialog-" + Guid.NewGuid().ToString("N");
+    [Parameter, EditorRequired] public GXDatabase Database { get; set; } = null!;
+    [Parameter] public bool Importing { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private List<SchemaRow> _rows = [];
+    private bool _busy;
+    private string? _message;
+    private string? _downloadUri;
+
+    private Task CloseAsync() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private sealed class SchemaRow
+    {
+        public string Name { get; init; } = "";
+        public JsonElement Schema { get; init; }
+        public bool Selected { get; set; }
+        public bool Imported { get; set; }
+        public string? Status { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Importing) return;
+        _busy = true;
+        try
+        {
+            var names = await Api.GetTablesAsync(Database, CancellationToken.None);
+            _rows = names.Select(name => new SchemaRow { Name = name }).ToList();
+            if (_rows.Count == 0) _message = "No tables found in the selected database.";
+        }
+        catch (Exception ex) { _message = $"Could not load tables: {ex.Message}"; }
+        finally { _busy = false; }
+    }
+
+    private ValueTask<ItemsProviderResult<SchemaRow>> GetRows(GXItemsProviderRequest request)
+        => ValueTask.FromResult(new ItemsProviderResult<SchemaRow>(_rows, _rows.Count));
+
+    private void SelectAll(bool selected)
+    {
+        foreach (var row in _rows.Where(row => !row.Imported)) row.Selected = selected;
+    }
+
+    private async Task ReadFileAsync(InputFileChangeEventArgs args)
+    {
+        if (_busy) return;
+        _busy = true;
+        _rows = [];
+        _message = null;
+        try
+        {
+            await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            LoadSchemas(await reader.ReadToEndAsync());
+        }
+        catch (Exception ex) { _message = $"Could not read schema file: {ex.Message}"; }
+        finally { _busy = false; }
+    }
+
+    private void LoadSchemas(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var tables = root.ValueKind == JsonValueKind.Array ? root.EnumerateArray().ToArray() : [root];
+        var rows = new List<SchemaRow>();
+        foreach (var table in tables)
+        {
+            if (table.ValueKind != JsonValueKind.Object) throw new JsonException("Expected table schema objects.");
+            string? name = null, owner = null;
+            bool columns = false;
+            foreach (var property in table.EnumerateObject())
+            {
+                if (property.Name.Equals("name", StringComparison.OrdinalIgnoreCase)) name = property.Value.GetString();
+                if (property.Name.Equals("schema", StringComparison.OrdinalIgnoreCase)) owner = property.Value.GetString();
+                if (property.Name.Equals("columns", StringComparison.OrdinalIgnoreCase))
+                    columns = property.Value.ValueKind == JsonValueKind.Array && property.Value.GetArrayLength() > 0;
+            }
+            if (string.IsNullOrWhiteSpace(name) || !columns) throw new JsonException("Each table must contain a name and columns.");
+            string fullName = string.IsNullOrWhiteSpace(owner) ? name : $"{owner}.{name}";
+            if (rows.Any(row => row.Name.Equals(fullName, StringComparison.OrdinalIgnoreCase)))
+                throw new JsonException($"Duplicate table '{fullName}'.");
+            rows.Add(new SchemaRow { Name = fullName, Schema = table.Clone() });
+        }
+        _rows = rows;
+        _message = rows.Count == 0 ? "The file contains no tables." : null;
+    }
+
+    private async Task TransferAsync()
+    {
+        if (_busy) return;
+        var selected = _rows.Where(row => row.Selected && !row.Imported).ToArray();
+        if (selected.Length == 0) return;
+        _busy = true;
+        _downloadUri = null;
+        int succeeded = 0;
+        var exported = new List<JsonElement>();
+        try
+        {
+            foreach (var row in selected)
+            {
+                try
+                {
+                    if (Importing)
+                    {
+                        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(row.Schema.GetRawText()));
+                        await Api.ImportTableSchemaAsync(Database.Id, stream, CancellationToken.None);
+                        row.Imported = true;
+                        row.Selected = false;
+                    }
+                    else
+                    {
+                        string json = await Api.ExportTableSchemaAsync(Database.Id, row.Name, CancellationToken.None);
+                        using var schema = JsonDocument.Parse(json);
+                        exported.Add(schema.RootElement.Clone());
+                    }
+                    row.Status = Importing ? "Imported" : "Exported";
+                    ++succeeded;
+                }
+                catch (Exception ex) { row.Status = ex.Message; }
+            }
+            if (!Importing && exported.Count > 0)
+                _downloadUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(
+                    JsonSerializer.Serialize(exported, new JsonSerializerOptions { WriteIndented = true }));
+            _message = $"{succeeded} of {selected.Length} tables {(Importing ? "imported" : "exported")}.";
+        }
+        finally { _busy = false; }
+    }
+}
+
+
+

@@ -1,0 +1,125 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="gx-mermaid">
+    <div class="gx-mermaid-toolbar" role="group" aria-label="Diagram zoom">
+        <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(!_ready || _zoom <= 0.1)" @onclick="() => ZoomAsync(_zoom / 1.25)" aria-label="Zoom out">−</button>
+        <span aria-live="polite">@(_zoom.ToString("P0"))</span>
+        <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(!_ready || _zoom >= 4)" @onclick="() => ZoomAsync(_zoom * 1.25)" aria-label="Zoom in">+</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(!_ready)" @onclick="() => ZoomAsync(1)">Reset zoom</button>
+    </div>
+    @if (_error is not null)
+    {
+        <p class="alert alert-danger" role="alert">@_error</p>
+    }
+    @if (string.IsNullOrWhiteSpace(Source))
+    {
+        <p role="status">No diagram to display.</p>
+    }
+    <div class="gx-mermaid-viewport" style="height: @Height" tabindex="0" role="region" aria-label="@Label" aria-busy="@_rendering">
+        <div @ref="_host"></div>
+    </div>
+</div>
+
+@code {
+    /// <summary>Mermaid source, for example the result of GXSchemaManager.ExportMermaid().</summary>
+    [Parameter] public string? Source { get; set; }
+    [Parameter] public string Height { get; set; } = "600px";
+    [Parameter] public string Label { get; set; } = "Database schema diagram";
+
+    private ElementReference _host;
+    private IJSObjectReference? _module;
+    private string? _renderedSource;
+    private string? _error;
+    private bool _initialized, _rendering, _ready, _disposed;
+    private double _zoom = 1;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _rendering || (_initialized && _renderedSource == Source)) return;
+        _rendering = true;
+        _ready = false;
+        _error = null;
+        StateHasChanged();
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./Components/GXMermaid.razor.js");
+            while (!_disposed && (!_initialized || _renderedSource != Source))
+            {
+                var source = Source;
+                _initialized = true;
+                _renderedSource = source;
+                _zoom = 1;
+                _error = null;
+                try
+                {
+                    await _module.InvokeVoidAsync("render", _host, source);
+                    _ready = !string.IsNullOrWhiteSpace(source);
+                }
+                catch (JSException ex)
+                {
+                    _ready = false;
+                    _error = $"Unable to display diagram: {ex.Message}";
+                }
+            }
+        }
+        catch (JSException ex)
+        {
+            _initialized = true;
+            _renderedSource = Source;
+            _error = $"Unable to load diagram viewer: {ex.Message}";
+        }
+        finally
+        {
+            _rendering = false;
+            if (_disposed && _module is not null) await _module.DisposeAsync();
+            if (!_disposed) StateHasChanged();
+        }
+    }
+
+    private async Task ZoomAsync(double value)
+    {
+        if (!_ready || _module is null || _disposed) return;
+        _zoom = Math.Clamp(value, 0.1, 4);
+        await _module.InvokeVoidAsync("zoom", _host, _zoom);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (!_rendering && _module is not null) await _module.DisposeAsync();
+    }
+}

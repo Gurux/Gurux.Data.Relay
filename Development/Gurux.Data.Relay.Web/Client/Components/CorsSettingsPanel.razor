@@ -1,0 +1,122 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="@Mode" Busy="@_saving" IsEditing="@(() => _saving || Dirty)" OnChanged="LoadAsync">
+    <section class="panel">
+        <h2>@Title CORS</h2>
+        @if (_message is not null)
+        {
+            <p class="alert @(_failed ? "alert-danger" : "alert-success")" role="status">@_message</p>
+        }
+        @if (_settings is not null)
+        {
+            <fieldset disabled="@_saving">
+                <div class="form-check mb-2">
+                    <input id="@(Mode + "-cors-enabled")" type="checkbox" class="form-check-input" @bind="_enabled" />
+                    <label class="form-check-label" for="@(Mode + "-cors-enabled")">Enable CORS</label>
+                </div>
+                <div class="mb-2">
+                    <label for="@(Mode + "-cors-origins")">Allowed origins</label>
+                    <textarea id="@(Mode + "-cors-origins")" class="form-control" rows="4" @bind="_origins" @bind:event="oninput"></textarea>
+                    <small class="form-text text-muted">One origin per line, for example https://app.example.com or http://localhost:3000. Do not include a path or trailing slash. Use * to allow any origin without credentials.</small>
+                </div>
+                <div class="form-check mb-2">
+                    <input id="@(Mode + "-cors-credentials")" type="checkbox" class="form-check-input" @bind="_credentials" />
+                    <label class="form-check-label" for="@(Mode + "-cors-credentials")">Allow credentials</label>
+                </div>
+                <button class="btn btn-success" disabled="@(!Dirty)" @onclick="SaveAsync">Save CORS settings</button>
+                @if (Dirty)
+                {
+                    <button class="btn btn-secondary ms-2" @onclick="LoadAsync">Discard changes</button>
+                }
+            </fieldset>
+        }
+    </section>
+</GXLiveView>
+
+@code {
+    [Parameter, EditorRequired] public string Mode { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    private GXSettings? _settings;
+    private bool _enabled, _credentials, _saving, _failed;
+    private string _origins = string.Empty;
+    private string? _message;
+    private string[] Origins => _origins.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.Ordinal).ToArray();
+    private bool Dirty => _settings is not null && (_enabled != _settings.CorsEnabled || _credentials != _settings.CorsAllowCredentials || !Origins.SequenceEqual(_settings.CorsAllowedOrigins));
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+            _enabled = _settings.CorsEnabled;
+            _credentials = _settings.CorsAllowCredentials;
+            _origins = string.Join(Environment.NewLine, _settings.CorsAllowedOrigins);
+            _message = null;
+            _failed = false;
+        }
+        catch (Exception ex) { _failed = true; _message = ex.Message; }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving || _settings is null) return;
+        _saving = true;
+        try
+        {
+            if (_credentials && Origins.Contains("*")) throw new InvalidOperationException("Specify explicit origins when allowing credentials.");
+            foreach (var origin in Origins)
+                if (origin != "*" && (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+                    uri.Scheme is not ("http" or "https") || uri.AbsolutePath != "/" ||
+                    uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 || origin.EndsWith('/')))
+                    throw new InvalidOperationException("Use HTTP(S) origins without a path, trailing slash, credentials, query or fragment.");
+            // Keep the original snapshot and concurrency stamp until the save succeeds.
+            var payload = System.Text.Json.JsonSerializer.Deserialize<GXSettings>(
+                System.Text.Json.JsonSerializer.Serialize(_settings),
+                new System.Text.Json.JsonSerializerOptions { PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate })!;
+            payload.CorsEnabled = _enabled;
+            payload.CorsAllowCredentials = _credentials;
+            payload.CorsAllowedOrigins = Origins.ToList();
+            await Api.SaveSettingsAsync(Mode, payload, CancellationToken.None);
+            _settings = payload;
+            _failed = false;
+            _message = "CORS settings saved.";
+        }
+        catch (Exception ex) { _failed = true; _message = ex.Message; }
+        finally { _saving = false; }
+    }
+}

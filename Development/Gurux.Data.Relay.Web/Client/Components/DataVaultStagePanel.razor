@@ -1,0 +1,176 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Shared.Enums
+
+@inject GXAdminApiClient Api
+
+<section class="panel">
+    <h2>Data Vault Stage</h2>
+    <fieldset disabled="@(_creating || _creatingMart)">
+        <label>Database</label>
+        <GXInputDropdown TValue="GXDatabase" Items="_databases" @bind-Value="_database" @bind-Value:after="LoadTablesAsync" class="form-select">
+            <Template Context="database">@(database.Description ?? database.Type.ToString())</Template>
+        </GXInputDropdown>
+        @if (_message != null)
+        {
+            <p role="status">@_message</p>
+        }
+        <label class="d-block"><input type="checkbox" @bind="_showAll" @bind:after="OnShowAllChanged" /> Show all</label>
+        @foreach (var table in VisibleTables)
+        {
+            <div><button type="button" class="@(table == _selected ? "btn btn-primary" : "btn btn-link")" @onclick="() => SelectTable(table)">@table</button></div>
+        }
+    </fieldset>
+    @if (_describing)
+    {
+        <p role="status">Loading table structure...</p>
+    }
+    @if (_describedSchema is not null)
+    {
+        <h3>Table structure: @_describedSchema</h3>
+        <TableStructure Schema="_describedSchema" />
+    }
+</section>
+@if (_creatingMart && _database != null && _selected != null)
+{
+    <DataVaultMartDialog DatabaseId="_database.Id" SourceTable="@_selected" OnCreated="MartCreatedAsync" OnCancel="CancelMart" />
+}
+@if (_creating && _database != null)
+{
+    <DataVaultTableDialog Database="_database" SourceTable="@_selected" ObjectType="_type" OnCompleted="VaultCreatedAsync" OnCancel="CancelVault" />
+}
+@code {
+    [Inject] public IGXTopMenu TopMenu { get; set; } = default!;
+    private IReadOnlyList<GXDatabase> _databases = [];
+    private GXDatabase? _database;
+    private IReadOnlyList<string> _tables = [];
+    private bool _showAll;
+    private IEnumerable<string> VisibleTables => _tables.Where(table => _showAll ||
+        !new[] { "HUB_", "LNK_", "SAT_", "REF_", "MART_" }.Any(prefix =>
+            table.Split('.').Last().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
+    private void OnShowAllChanged()
+    {
+        if (_selected != null && !VisibleTables.Contains(_selected))
+        {
+            _selected = null;
+            ClearDescription();
+            TopMenu.Clear();
+        }
+    }
+    private string? _selected, _message;
+    private GXTableSchema? _describedSchema;
+    private bool _describing;
+    private int _descriptionVersion;
+    private void ClearDescription()
+    {
+        ++_descriptionVersion;
+        _describedSchema = null;
+        _describing = false;
+    }
+    private DataVaultObjectType _type;
+    private bool _creating, _creatingMart, _busy;
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _databases = await Api.GetDatabasesAsync("datavault", default);
+            _database = _databases.FirstOrDefault();
+            await LoadTablesAsync();
+        }
+        catch (Exception ex) { _message = ex.Message; }
+    }
+    private async Task LoadTablesAsync()
+    {
+        _creatingMart = false;
+        _selected = null;
+        ClearDescription();
+        _tables = [];
+        TopMenu.Clear();
+        if (_database == null) return;
+        try { _tables = await Api.GetTablesAsync(_database, default); }
+        catch (Exception ex) { _message = ex.Message; }
+    }
+    private async Task SelectTable(string table)
+    {
+        if (_creating || _creatingMart) return;
+        _selected = table;
+        TopMenu.Clear();
+        TopMenu.EditContext = null;
+        TopMenu.AddMenuItems(new[] { DataVaultObjectType.Hub, DataVaultObjectType.Link, DataVaultObjectType.Satellite, DataVaultObjectType.Reference }
+            .Select(type => new GXMenuItem($"Add {type}", null, EventCallback.Factory.Create(this, () => OpenAsync(type)))));
+        TopMenu.AddMenuItems(new[] { new GXMenuItem("Add Mart", null, EventCallback.Factory.Create(this, OpenMart)) });
+        ClearDescription();
+        if (_database is null) return;
+        var database = _database;
+        int version = _descriptionVersion;
+        _describing = true;
+        _message = null;
+        try
+        {
+            var schema = await Api.GetColumnsAsync(database, table, CancellationToken.None);
+            if (version != _descriptionVersion) return;
+            if (string.IsNullOrEmpty(schema.Name)) schema.Name = table;
+            _describedSchema = schema;
+        }
+        catch (Exception ex)
+        {
+            if (version == _descriptionVersion) _message = $"Could not describe {table}: {ex.Message}";
+        }
+        finally
+        {
+            if (version == _descriptionVersion) _describing = false;
+        }
+    }
+    private void OpenMart() { if (!_busy && !_creating && _selected != null) _creatingMart = true; }
+    private void CancelMart() => _creatingMart = false;
+    private async Task MartCreatedAsync(GXCreateVaultTableResult result)
+    {
+        _creatingMart = false;
+        _message = result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.";
+        await LoadTablesAsync();
+    }
+    private Task OpenAsync(DataVaultObjectType type)
+    {
+        if (!_busy && !_creating && !_creatingMart) { _type = type; _creating = true; }
+        return Task.CompletedTask;
+    }
+    private void CancelVault() => _creating = false;
+    private async Task VaultCreatedAsync(GXCreateVaultTableResult result)
+    {
+        _creating = false;
+        _message = result.MappingError ?? $"Created table {result.TableName}.";
+        await LoadTablesAsync();
+    }
+}

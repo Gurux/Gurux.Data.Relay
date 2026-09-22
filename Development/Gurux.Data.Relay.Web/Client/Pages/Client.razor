@@ -1,0 +1,91 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/client"
+@page "/client/tables"
+@page "/client/transports"
+@page "/client/state"
+@page "/client/log"
+@page "/client/overview"
+
+@using Gurux.UI.Components.Tab
+@inject NavigationManager Navigation
+
+<TabControl Active="@(Path?.StartsWith('/') == true ? Path : $"/client/{Path}")" SelectionChanged="@SelectionChanged">
+    <TabTextTemplate>
+        <Image Value="@context.Icon" />
+        <LocalizedText Value="@context.Text" />
+    </TabTextTemplate>
+    <ChildContent>
+        <TabPage Path="/client/tables" Text="Tables" Icon="oi oi-list-rich">
+            <HelpContext Topic="tables--tables-to-transfer" />
+            <ClientTablesPanel />
+        </TabPage>
+        <TabPage Path="/client/transports" Text="Transports" Icon="oi oi-transfer">
+            <HelpContext Topic="transports--transfer-connections" />
+            <ModeTransportsPanel Mode="client" />
+        </TabPage>
+        <TabPage Path="/client/state" Text="State" Icon="oi oi-dashboard">
+            <HelpContext Topic="state--transfer-state" />
+            <ModeStatePanel Mode="client" Title="Client Runtime State" />
+        </TabPage>
+        <TabPage Path="/client/log" Text="Log" Icon="oi oi-spreadsheet">
+            <HelpContext Topic="log--client-log" />
+            <ModeEventsPanel Mode="client" Title="Client Log" />
+        </TabPage>
+        <TabPage Path="/client/overview" Text="Settings" Icon="oi oi-cog">
+            <HelpContext Topic="settings--client-settings" />
+            <ModeSettingsPanel Mode="client" Title="Client Settings" ShowClientActions="true" />
+        </TabPage>
+    </ChildContent>
+</TabControl>
+
+@code {
+
+    private string? Path { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        Path = new Uri(Navigation.Uri).AbsolutePath;
+    }
+
+    /// <summary>
+    /// User has selected a new tab.
+    /// </summary>
+    /// <param name="page">Tab page.</param>
+    void SelectionChanged(TabPage page)
+    {
+        Path = page.Path;
+    }
+}
+

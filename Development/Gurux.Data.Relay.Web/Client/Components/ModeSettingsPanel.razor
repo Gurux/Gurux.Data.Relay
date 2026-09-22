@@ -1,0 +1,171 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Forms
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="@Mode" Busy="@_saving" IsEditing="@(() => _saving || _jsonText != _loadedJson)" OnChanged="LoadAsync">
+
+<section class="panel">
+    <h2>@Title</h2>
+
+    @if (!string.IsNullOrWhiteSpace(_message))
+    {
+        <p class="notice">@_message</p>
+    }
+
+    <div class="actions-row">
+        @if (_jsonText != _loadedJson) { <button class="btn btn-secondary" @onclick="LoadAsync">Discard changes</button> }
+        <button class="btn btn-success" @onclick="SaveAsync">Save</button>
+        <button class="btn btn-secondary" @onclick="ExportAsync">Export settings</button>
+        @if (!string.IsNullOrWhiteSpace(_exportDataUri))
+        {
+            <a class="btn btn-outline-success" href="@_exportDataUri" download="@_exportFileName">Download export</a>
+        }
+        <label class="btn btn-outline-secondary mb-0">
+            Import settings
+            <InputFile OnChange="ImportAsync" style="display:none" />
+        </label>
+        @if (ShowClientActions)
+        {
+            <button class="btn btn-info" @onclick="SendSchemaAsync">Send schema</button>
+        }
+    </div>
+
+    <p class="summary">@_summary</p>
+
+    <InputTextArea class="json-editor" @bind-Value="_jsonText" @oninput="@(e => { _jsonText = e.Value?.ToString() ?? string.Empty; })"></InputTextArea>
+</section>
+
+
+</GXLiveView>
+@code {
+    [Parameter, EditorRequired]
+    public string Mode { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    [Parameter]
+    public bool ShowClientActions { get; set; }
+
+    private GXSettings _settings = new();
+    private bool _saving;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private string _jsonText = "{}"; private string _loadedJson = "{}";
+    private string _summary = string.Empty;
+    private string? _message;
+    private string? _exportDataUri;
+    private string _exportFileName = "settings.json";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+        _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
+        _summary = BuildSummary(_settings);
+        _message = "Settings loaded.";
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving) return;
+        _saving = true;
+        try
+        {
+        _settings = JsonSerializer.Deserialize<GXSettings>(_jsonText, JsonOptions) ?? throw new JsonException("Settings must be a JSON object.");
+        await Api.SaveSettingsAsync(Mode, _settings, CancellationToken.None);
+        _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
+        _summary = BuildSummary(_settings);
+        _message = "Settings saved.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _saving = false; }
+    }
+
+    private async Task ExportAsync()
+    {
+        string json = await Api.ExportSettingsAsync(Mode, CancellationToken.None);
+        _exportDataUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(json);
+        _exportFileName = $"Gurux.Data.Relay.{Mode}.settings.json";
+        _message = $"Export ready ({json.Length} characters). Use Download export.";
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs args)
+    {
+        if (_saving) return;
+        _saving = true;
+        try
+        {
+        IBrowserFile file = args.File;
+        await using Stream stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+        using StreamReader reader = new(stream);
+        string json = await reader.ReadToEndAsync();
+
+        var importOptions = new JsonSerializerOptions(JsonOptions);
+        importOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, importOptions)
+            ?? throw new JsonException("Settings must be a JSON object.");
+        await Api.ImportSettingsAsync(Mode, imported, CancellationToken.None);
+        _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+        _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
+        _summary = BuildSummary(_settings);
+        _message = "Imported settings saved.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _saving = false; }
+    }
+
+    private async Task SendSchemaAsync()
+    {
+        int sentSchemas = await Api.SendClientSchemaAsync(CancellationToken.None);
+        _message = $"Schema send completed. Sent {sentSchemas} schema messages.";
+    }
+
+    private static string BuildSummary(GXSettings settings)
+    {
+        int tables = settings.Databases.Sum(db => db.Tables?.Count ?? 0);
+        int transports = settings.Databases.Sum(db => db.Tables?.Sum(table => table.Transports.Count) ?? 0);
+        int mappings = settings.Databases.Sum(db => db.Mappings?.Count ?? 0);
+        return $"Databases: {settings.Databases.Count} | Tables: {tables} | Transports: {transports} | Mappings: {mappings}";
+    }
+}
+
+
+

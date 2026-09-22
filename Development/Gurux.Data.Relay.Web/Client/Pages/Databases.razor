@@ -1,0 +1,59 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/databases"
+@page "/databases/data"
+@using Gurux.UI.Components.Tab
+@inject NavigationManager Navigation
+
+
+
+<TabControl Active="@_path" SelectionChanged="@(page => _path = page.Path)">
+    <ChildContent>
+        <TabPage Path="/databases" Text="Databases" Icon="oi oi-hard-drive">
+            <HelpContext Topic="databases" />
+            <DatabaseCatalogPanel />
+        </TabPage>
+        <TabPage Path="/databases/data" Text="Data" Icon="oi oi-grid-three-up">
+            <HelpContext Topic="database-data" />
+            <ModeTableDataPanel @key="(DatabaseId, Table)" Mode="databases" InitialDatabaseId="DatabaseId" InitialTable="@Table" />
+        </TabPage>
+    </ChildContent>
+</TabControl>
+
+@code {
+    [SupplyParameterFromQuery(Name = "databaseId")] public Guid? DatabaseId { get; set; }
+    [SupplyParameterFromQuery(Name = "table")] public string? Table { get; set; }
+    private string _path = "/databases";
+    protected override void OnParametersSet() => _path = new Uri(Navigation.Uri).AbsolutePath;
+}

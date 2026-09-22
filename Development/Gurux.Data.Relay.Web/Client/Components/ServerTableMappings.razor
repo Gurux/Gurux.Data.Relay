@@ -1,0 +1,172 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@inject GXAdminApiClient Api
+
+<p>Map each incoming table name to a destination database and table.</p>
+<button type="button" class="btn btn-secondary mb-3" @onclick="() => OpenAsync(null)">Add mapping</button>
+<GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXTransportTable" Context="route" @ref="_grid" @bind-Active="_active"
+         ShowAllData="true" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetItems">
+    <HeaderContent><th>Source table</th><th>Destination database</th><th>Destination table</th><th></th></HeaderContent>
+    <ItemContent>
+        <td><button type="button" class="btn btn-link" @onclick="() => OpenAsync(route)">@route.Source</button></td>
+        <td>@DatabaseLabel(route.DatabaseId)</td>
+        <td>@route.Table</td>
+        <td><button type="button" class="btn btn-outline-danger" @onclick="() => RemoveAsync(route)">Remove</button></td>
+    </ItemContent>
+    <MenuContent>
+        <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="EditSelectedAsync" />
+        <ContextMenuItem Text="Remove" Image="oi oi-trash" OnClick="RemoveSelectedAsync" />
+    </MenuContent>
+</GXTable>
+
+@if (_draft is not null)
+{
+    <GXValidationDialog Model="@_draft" Title="@(_original is null ? "Add table mapping" : "Edit table mapping")" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
+        @if (_error is not null) { <p class="alert alert-danger" role="alert">@_error</p> }
+        <div class="mb-3">
+            <label>Source table name</label>
+            <InputText class="form-control" @bind-Value="_draft.Source" />
+            <ValidationMessage For="@(() => _draft.Source)" />
+        </div>
+        <div class="mb-3">
+            <label>Destination database</label>
+            <DropdownSearch TValue="Guid" class="form-control" ShowItemsWhenEmpty="true"
+                            Items="@(Settings.Databases.Select(d => d.Id))"
+                            @bind-Value="_draft.DatabaseId" @bind-Value:after="ChangeDatabaseAsync" Formatter="DatabaseLabel">
+                <Template Context="databaseId">@DatabaseLabel(databaseId)</Template>
+            </DropdownSearch>
+                            <ValidationMessage For="@(() => _draft.DatabaseId)" />
+        </div>
+        <div class="mb-3">
+            <label>Destination table</label>
+            <DropdownSearch TValue="string" class="form-control" ShowItemsWhenEmpty="true"
+                            Items="@_tables.Prepend(_draft.Table).Where(name => !string.IsNullOrWhiteSpace(name)).Distinct()" @bind-Value="_draft.Table">
+                <Template Context="name">@(string.IsNullOrEmpty(name) ? "Select table" : name)</Template>
+            </DropdownSearch>
+            <ValidationMessage For="@(() => _draft.Table)" />
+        </div>
+        <button type="button" class="btn btn-success" disabled="@_loading" @onclick="ConfirmAsync">Apply mapping</button>
+        <button type="button" class="btn btn-secondary ms-2" @onclick="Cancel">Cancel</button>
+        <p class="form-text">Save the transport to persist these changes.</p>
+    </GXValidationDialog>
+}
+
+@code {
+    private readonly string _gxTableIdPrefix = "servertablemappings-" + Guid.NewGuid().ToString("N");
+    [Parameter, EditorRequired] public GXSettings Settings { get; set; } = default!;
+    [Parameter, EditorRequired] public List<GXTransportTable> Routes { get; set; } = [];
+    [Parameter] public EventCallback OnChanged { get; set; }
+    private GXTable<GXTransportTable>? _grid;
+    private GXTransportTable? _active, _original, _draft;
+    private IReadOnlyList<string> _tables = [];
+    private string? _error;
+    private bool _loading;
+    private int _loadVersion;
+
+    private ValueTask<ItemsProviderResult<GXTransportTable>> GetItems(GXItemsProviderRequest request)
+        => ValueTask.FromResult(new ItemsProviderResult<GXTransportTable>(Routes.ToArray(), Routes.Count));
+
+    private string DatabaseLabel(Guid id) => id == Guid.Empty ? "Select database" :
+        Settings.Databases.FirstOrDefault(d => d.Id == id) is { } database ? $"{Settings.Databases.IndexOf(database)}: {database.Description ?? database.Type.ToString()}" : "Database not found";
+
+    private async Task OpenAsync(GXTransportTable? route)
+    {
+        _original = route;
+        _draft = route is null ? new() : System.Text.Json.JsonSerializer.Deserialize<GXTransportTable>(System.Text.Json.JsonSerializer.Serialize(route))!;
+        _error = null;
+        await LoadTablesAsync();
+    }
+
+    private async Task ChangeDatabaseAsync()
+    {
+        _draft!.Table = string.Empty;
+        _draft.TableId = null;
+        await LoadTablesAsync();
+    }
+
+    private async Task LoadTablesAsync()
+    {
+        int version = ++_loadVersion;
+        _tables = [];
+        _error = null;
+        _loading = false;
+        var database = Settings.Databases.FirstOrDefault(d => d.Id == _draft?.DatabaseId);
+        if (database is null) return;
+        _loading = true;
+        try
+        {
+            var tables = await Api.GetTablesAsync(database, CancellationToken.None);
+            if (version == _loadVersion) _tables = tables;
+        }
+        catch (Exception ex) { if (version == _loadVersion) _error = ex.Message; }
+        finally { if (version == _loadVersion) _loading = false; }
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (_draft is null || _loading) return;
+        _draft.Source = _draft.Source?.Trim();
+        _draft.Table = _draft.Table.Trim();
+        if (string.IsNullOrWhiteSpace(_draft.Source) || string.IsNullOrWhiteSpace(_draft.Table) || !Settings.Databases.Any(d => d.Id == _draft.DatabaseId))
+        { _error = "Select a source name, destination database and destination table."; return; }
+        if (Routes.Any(r => r != _original && string.Equals(r.Source, _draft.Source, StringComparison.OrdinalIgnoreCase)))
+        { _error = "Each incoming table name can have only one destination per transport."; return; }
+        if (_original is null) Routes.Add(_draft);
+        else
+        {
+            int index = Routes.IndexOf(_original);
+            if (index < 0) { _error = "The selected mapping no longer exists."; return; }
+            if (_original.Table != _draft.Table || _original.DatabaseId != _draft.DatabaseId) _draft.TableId = null;
+            Routes[index] = _draft;
+        }
+        Cancel();
+        await ChangedAsync();
+    }
+
+    private void Cancel() { ++_loadVersion; _draft = null; _original = null; _error = null; _loading = false; }
+    private Task EditSelectedAsync() => _active is null ? Task.CompletedTask : OpenAsync(_active);
+    private Task RemoveSelectedAsync() => _active is null ? Task.CompletedTask : RemoveAsync(_active);
+    private async Task RemoveAsync(GXTransportTable route)
+    {
+        if (Routes.Remove(route)) { _active = null; await ChangedAsync(); }
+    }
+    private async Task ChangedAsync()
+    {
+        await OnChanged.InvokeAsync();
+        if (_grid is not null) await _grid.RefreshDataAsync(true);
+    }
+}
+
+
+

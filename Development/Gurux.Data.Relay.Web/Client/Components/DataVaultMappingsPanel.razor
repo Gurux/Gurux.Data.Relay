@@ -1,0 +1,1056 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@inject GXAdminApiClient Api
+@using Gurux.Data.Relay.Configuration
+@using Gurux.Data.Relay.Web.Client.Enums
+@using Gurux.UI.Components.Panel
+@using System.Text.Json
+@using Gurux.Data.Relay.Shared.Enums
+@using Gurux.Data.Relay.Shared
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+
+<GXLiveView Mode="datavault" IsEditing="@(() => _action != CrudAction.None || _addType != null || _creatingMart)" OnChanged="LoadAsync">
+
+    @if (_action == CrudAction.Delete && _activeMapping != null)
+    {
+        <GXValidationDialog Model="@_draft" Title="Delete mapping" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <div class="alert alert-danger" role="alert">@_message</div>
+            }
+            <p>Delete this mapping?</p>
+            <p><strong>Source table:</strong> @_activeMapping.SourceTable?.Name</p>
+            <p><strong>Target table:</strong> @_activeMapping.TargetTable?.Name</p>
+            <p><strong>Database:</strong> @GetMappingDatabaseLabel(_activeMapping)</p>
+            <fieldset disabled="@_busy">
+                <button type="button" class="btn btn-danger" @onclick="DeleteAsync">Delete mapping</button>
+                <button type="button" class="btn btn-secondary" @onclick="CloseMappingDialog">Cancel</button>
+            </fieldset>
+        </GXValidationDialog>
+    }
+    @if (_columnDraft is { } editedColumn)
+    {
+        <GXValidationDialog Model="@editedColumn" Title="@(_deleteColumn ? "Delete column" : "Edit column")" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <div class="alert alert-danger" role="alert">@_message</div>
+            }
+            <fieldset disabled="@_busy">
+                @if (_deleteColumn)
+                {
+                    <p>Delete mapping for column @editedColumn.TargetColumn?</p>
+                }
+                else
+                {
+                    <label>Source table</label>
+                    <p>@SourceMappingLabel(editedColumn.SourceMappingId, _draft.SourceTable.Name)</p>
+                    <label>Source column</label>
+                    <DropdownSearch class="form-control" Items="_sourceColumns" ShowItemsWhenEmpty="true" @bind-Value="editedColumn.SourceColumn" />
+                    <ValidationMessage For="@(() => editedColumn.SourceColumn)" />
+                    <label>Target column</label>
+                    <DropdownSearch class="form-control" Items="_targetColumns" ShowItemsWhenEmpty="true" @bind-Value="editedColumn.TargetColumn" />
+                    <ValidationMessage For="@(() => editedColumn.TargetColumn)" />
+                    <label>Role</label>
+                    <GXInputDropdown @bind-Value="editedColumn.Role" />
+                    <ValidationMessage For="@(() => editedColumn.Role)" />
+                    @if (_draft.ObjectType == DataVaultObjectType.InformationMart)
+                    {
+                        <label>Aggregation</label>
+                        <GXInputDropdown class="form-select" @bind-Value="editedColumn.Aggregation" />
+                        <ValidationMessage For="@(() => editedColumn.Aggregation)" />
+                    }
+                }
+                <button class="btn btn-primary" @onclick="SaveColumnAsync">@(_deleteColumn ? "Delete" : "Save")</button>
+                <button class="btn btn-secondary" @onclick="CloseMappingDialog">Cancel</button>
+            </fieldset>
+        </GXValidationDialog>
+    }
+    @if (_creatingMart && Active != null && _selectedSourceTable != null)
+    {
+        <DataVaultMartDialog DatabaseId="Active.Id" SourceTable="@_selectedSourceTable" OnCreated="MartCreatedAsync" OnCancel="CloseMartDialog" />
+    }
+
+    @if (_addType is { } vaultType && Active != null)
+    {
+        <DataVaultTableDialog Database="Active" SourceTable="@_vaultSource" ObjectType="vaultType" MappingMode="true"
+                              OnCompleted="VaultMappingCreatedAsync" OnCancel="CloseVaultDialog" />
+    }
+    @if (_columnDraft == null && (_action is CrudAction.Create or CrudAction.Update))
+    {
+        <GXValidationDialog Model="@_draft" Title="@((_action == CrudAction.Create ? "Add " : "Modify ") + (_stageScheduleOnly ? "Stage" : _draft.ObjectType.ToString()))" HelpTopic="@(_stageScheduleOnly ? "add-stage" : null)" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <div class="alert alert-danger" role="alert">@_message</div>
+            }
+            <fieldset disabled="@_busy">
+                @if (IsMappedMart)
+                {
+                    <p>Mart: @_draft.TargetTable.Name — root Hub: @_draft.SourceTable.Name</p>
+                    <table class="table">
+                        <thead><tr><th>Source table</th><th>Source column</th><th>Target column</th><th>Aggregation</th></tr></thead>
+                        <tbody>
+                            @foreach (var column in _draft.Columns)
+                            {
+                                <tr><td>@SourceMappingLabel(column.SourceMappingId, _draft.SourceTable.Name)</td><td>@column.SourceColumn</td><td>@column.TargetColumn</td><td>@column.Aggregation</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                    <label>Refresh schedule</label>
+                    <select class="form-select" @bind="_draft.Schedule.Type">
+                        <option value="@ScheduleType.Manual">Manual</option>
+                        <option value="@ScheduleType.Interval">Interval</option>
+                    </select>
+                    <ValidationMessage For="@(() => _draft.Schedule.Type)" />
+                    @if (_draft.Schedule.Type == ScheduleType.Interval)
+                    {
+                        <label>Interval</label>
+                        <InputIntegerTimeSpan @bind-Value="_draft.Schedule.IntervalSeconds" />
+                        <ValidationMessage For="@(() => _draft.Schedule.IntervalSeconds)" />
+                    }
+                }
+                else
+                {
+                    @if (_stageScheduleOnly)
+                    {
+                        <label>Stage database</label>
+                        <GXInputDropdown TValue="GXDatabase" Items="_databases" @bind-Value="_stageDatabase" @bind-Value:after="StageDatabaseChanged">
+                            <Template Context="database">@GetDatabaseLabel(database)</Template>
+                        </GXInputDropdown>
+                        <ValidationMessage For="@(() => _stageDatabase)" />
+                        <label>Stage table</label>
+                        <DropdownSearch TValue="string" Items="_stageTables" ShowItemsWhenEmpty="true" class="form-control"
+                                        @bind-Value="StageTableName" />
+                        <ValidationMessage For="@(() => StageTableName)" />
+                    }
+                    @if (!_stageScheduleOnly)
+                    {
+                        <label>Database</label>
+                        <GXInputDropdown TValue="GXDatabase" class="form-select" Items="_databases" @bind-Value="Active" @bind-Value:after="LoadTableChoicesAsync">
+                            <Template Context="database">@GetDatabaseLabel(database)</Template>
+                        </GXInputDropdown>
+                        <ValidationMessage For="@(() => Active)" />
+                        <label>Object type</label>
+                        <GXInputDropdown @bind-Value="_draft.ObjectType" @bind-Value:after="LoadColumnChoicesAsync" />
+                        <ValidationMessage For="@(() => _draft.ObjectType)" />
+                        <label>Source table</label>
+                        @if (_draft.ObjectType == DataVaultObjectType.Staging)
+                        {
+                            <InputText class="form-control" @bind-Value="DraftSourceName" @bind-Value:after="LoadColumnChoicesAsync" />
+                            <ValidationMessage For="@(() => DraftSourceName)" />
+                        }
+                        else
+                        {
+                            <DropdownSearch TValue="string" class="form-control" ShowItemsWhenEmpty="true"
+                                            Items="@StageSources" @bind-Value="DraftSourceName" @bind-Value:after="LoadColumnChoicesAsync" Formatter="StageLabel">
+                                <Template Context="source">@StageLabel(source)</Template>
+                            </DropdownSearch>
+                            <ValidationMessage For="@(() => DraftSourceName)" />
+                        }
+                        <label>Target table</label>
+                        <DropdownSearch class="form-control" ShowItemsWhenEmpty="true" Items="_tableChoices"
+                                        @bind-Value="DraftTargetName" @bind-Value:after="LoadColumnChoicesAsync" />
+                        <ValidationMessage For="@(() => DraftTargetName)" />
+                        <p>Select the existing table to map.</p>
+                        @if (_action == CrudAction.Create)
+                        {
+                            @foreach (var group in _draft.Columns.GroupBy(column => IsKeyColumn(column.Role.GetValueOrDefault())).OrderByDescending(group => group.Key))
+                            {
+                                <h4>@(group.Key ? "Keys and references" : "Columns")</h4>
+                                @foreach (var column in group)
+                                {
+                                    <div class="border rounded p-3 mb-3" @key="column">
+                                        <label>Source column</label>
+                                        <DropdownSearch class="form-control" Items="_sourceColumns" ShowItemsWhenEmpty="true" @bind-Value="column.SourceColumn" />
+                                        <ValidationMessage For="@(() => column.SourceColumn)" />
+                                        <label>Target column</label>
+                                        <DropdownSearch class="form-control" Items="_targetColumns" ShowItemsWhenEmpty="true" @bind-Value="column.TargetColumn" />
+                                        <ValidationMessage For="@(() => column.TargetColumn)" />
+                                        <label>Role</label>
+                                        <GXInputDropdown @bind-Value="column.Role" />
+                                        <ValidationMessage For="@(() => column.Role)" />
+                                        <button type="button" class="btn btn-outline-danger mt-2" @onclick="() => _draft.Columns.Remove(column)">Remove column</button>
+                                    </div>
+                                }
+                            }
+                            <button type="button" class="btn btn-secondary" @onclick="() => _draft.Columns.Add(new())">Add column</button>
+                        }
+                        <details class="mt-3">
+                            <summary>Tables mapped from this Stage</summary>
+                            @foreach (var mapping in RelatedVaultTables)
+                            {
+                                <p>@mapping.ObjectType: @mapping.TargetTable.Name</p>
+                            }
+                        </details>
+                    }
+                    @if (HasOwnSchedule(_draft) && _draft.Schedule != null)
+                    {
+                        <h4 class="mt-3">Schedule</h4>
+                        <GXInputDropdown @bind-Value="_draft.Schedule.Type" />
+                        <ValidationMessage For="@(() => _draft.Schedule.Type)" />
+                        @if (_draft.Schedule.Type == ScheduleType.Interval)
+                        {
+                            <label>Interval</label>
+                            <InputIntegerTimeSpan @bind-Value="_draft.Schedule.IntervalSeconds" />
+                            <ValidationMessage For="@(() => _draft.Schedule.IntervalSeconds)" />
+                        }
+                        else if (_draft.Schedule.Type == ScheduleType.Cron)
+                        {
+                            <label>Cron expression</label>
+                            <InputText @bind-Value="_draft.Schedule.Expression" />
+                            <ValidationMessage For="@(() => _draft.Schedule.Expression)" />
+                        }
+                        else if (_draft.Schedule.Type == ScheduleType.Daily)
+                        {
+                            <label>Time</label>
+                            <GXInputTimeSpan class="form-control" @bind-Value="DailyScheduleTime" LastValue="false" />
+                        }
+                    }
+                }
+                <div class="actions-row mt-2">
+                    <button type="button" class="btn btn-success" @onclick="SaveMappingAsync">Save mapping</button>
+                    <button type="button" class="btn btn-secondary" @onclick="CloseMappingDialog">Cancel</button>
+                </div>
+            </fieldset>
+        </GXValidationDialog>
+    }
+
+    <section class="panel">
+        <h2>@Title</h2>
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <p class="notice" role="alert">@_message</p>
+        }
+        <Panel Height="fill">
+            <PanelItem Height="fill" Width="50%" Id="vault-mappings">
+                <fieldset disabled="@(_busy || _creatingMart || _addType != null || _action != CrudAction.None)">
+                    <div class="actions-row">
+                        <label>Database</label>
+                        <GXInputDropdown TValue="GXDatabase" Items="_databases"
+                                         @bind-Value="Active" @bind-Value:after="LoadTableChoicesAsync">
+                            <Template Context="database">@GetDatabaseLabel(database)</Template>
+                        </GXInputDropdown>
+                    </div>
+                    <h3>Mappings</h3>
+                    <div class="mapping-list-table">
+                        <GXTable Id="@($"{_gxTableIdPrefix}-2")" TItem="GXDataVaultTableMapping" Context="mapping" @ref="_table" @key="Active"
+                                 Active="_activeMapping" ActiveChanged="SelectMapping"
+                                 ShowAllData="true"
+                                 ShowAllUsers="false"
+                                 ShowRemoved="false"
+                                 ItemsProvider="GetMappingItems">
+                            <FilterContent>
+                                <Fh>
+                                    <GXInputDropdown Items="MappingObjectTypes"
+                                                     @bind-Value="_mappingFilter.ObjectType" @bind-Value:after="Updated">
+                                        <Template Context="type">@(type?.ToString() ?? "\u00a0")</Template>
+                                    </GXInputDropdown>
+                                </Fh>
+                                <Fh>
+                                    <Search placeholder="Search Source..." LastValue="true"
+                                            @bind-Value="_sourceFilter" OnValueChanged="@(async (e) => await Updated())" />
+                                </Fh>
+                                <Fh>
+                                    <Search placeholder="Search Target..." LastValue="true"
+                                            @bind-Value="_targetFilter" OnValueChanged="@(async (e) => await Updated())" />
+                                </Fh>
+                                <Fh>
+                                    <GXInputDropdown Items="MappingScheduleTypes"
+                                                     @bind-Value="_scheduleTypeFilter" @bind-Value:after="Updated">
+                                        <Template Context="type">@(type?.ToString() ?? "\u00a0")</Template>
+                                    </GXInputDropdown>
+                                </Fh>
+                            </FilterContent>
+                            <HeaderContent>
+                                <th>Type</th>
+                                <th>Source</th>
+                                <th>Target</th>
+                                <th>Schedule</th>
+                            </HeaderContent>
+                            <ItemContent>
+                                <td><button class="btn btn-link" @onclick="() => EditAsync(_activeMapping)">@mapping.ObjectType</button></td>
+                                <td>@mapping.SourceTable?.Name</td>
+                                <td>@mapping.TargetTable?.Name</td>
+                                <td>@(HasOwnSchedule(mapping) ? ScheduleLabel(mapping.Schedule) : "From Stage")</td>
+                            </ItemContent>
+                            <MenuContent>
+                                <ContextMenuItem Text="Start" Image="oi oi-media-play" OnClick="StartSelectedMappingAsync" />
+                                @if (_activeMapping?.ObjectType == DataVaultObjectType.Staging)
+                                {
+                                    <ContextMenuItem Text="Add Mart" Image="oi oi-plus" OnClick="OpenMartFromStage" />
+                                }
+                                <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => EditAsync(_activeMapping)" />
+                                <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="() => ConfirmDelete(_activeMapping)" />
+                            </MenuContent>
+                        </GXTable>
+                    </div>
+                    @if (!VisibleMappings.Any())
+                    {
+                        <p>No mappings in this group.</p>
+                    }
+                </fieldset>
+            </PanelItem>
+            <PanelItem Height="auto" Id="vault-mapping-details">
+                <h3>Mapping details</h3>
+                @if (_action is CrudAction.None or CrudAction.Delete)
+                {
+                    @if (_activeMapping is { } selected)
+                    {
+                        <p><strong>Object type:</strong> @selected.ObjectType</p>
+                        <p><strong>Source table:</strong> @selected.SourceTable.Name</p>
+                        <p><strong>Target table:</strong> @selected.TargetTable.Name</p>
+                        @if (selected.ObjectType == DataVaultObjectType.Staging)
+                        {
+                            <button type="button" class="btn btn-primary" disabled="@(_busy || _creatingMart)" @onclick="OpenMartFromStage">Add Mart</button>
+                        }
+                        @if (HasOwnSchedule(selected) && selected.Schedule != null)
+                        {
+                            <p>
+                                <strong>Schedule:</strong> @selected.Schedule.Type
+                                @if (selected.Schedule.Type == ScheduleType.Interval)
+                                {
+                                    <span> (@selected.Schedule.IntervalSeconds seconds)</span>
+                                }
+                                @if (selected.Schedule.Type == ScheduleType.Daily)
+                                {
+                                    <span> @selected.Schedule.Time</span>
+                                }
+                                @if (selected.Schedule.Type == ScheduleType.Cron)
+                                {
+                                    <span> @selected.Schedule.Expression</span>
+                                }
+                            </p>
+                        }
+                        else
+                        {
+
+                            <p>Runs with its Stage or using Start.</p>
+                        }
+                        @if (selected.ObjectType == DataVaultObjectType.Staging)
+                        {
+                            @if (_stageSchemaLoading)
+                            {
+                                <p role="status">Loading table columns…</p>
+                            }
+                            else if (_stageSchemaError is not null)
+                            {
+
+                                <p class="alert alert-danger" role="alert">@_stageSchemaError</p>
+                            }
+                            else if (_stageSchema is not null)
+                            {
+
+                                <TableStructure Schema="_stageSchema" />
+                            }
+                        }
+                        else
+                        {
+                            <div class="table-responsive mapping-list-table">
+                                <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXDataVaultColumnMapping" Context="column" @key="selected" @ref="_columnTable"
+                                         Active="_activeColumn" ActiveChanged="@(column => _activeColumn = column)" ShowAllData="true" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetMappingColumnItems">
+                                    <HeaderContent>
+                                        <th>Type</th>
+                                        <th>Source table</th>
+                                        <th>Source</th>
+                                        <th>Target</th>
+                                        <th>Aggregation</th>
+                                    </HeaderContent>
+                                    <FilterContent>
+                                        <Fh>
+                                            <GXInputDropdown Items="MappingRoleTypes"
+                                                             @bind-Value="_columnFilter.Role" @bind-Value:after="ColumnsUpdated">
+                                                <Template Context="role">@(role?.ToString() ?? "\u00a0")</Template>
+                                            </GXInputDropdown>
+                                        </Fh>
+                                        <Fh>
+                                            <Search class="form-control" placeholder="Search Source table..." LastValue="true"
+                                                    @bind-Value="_columnSourceTableFilter" OnValueChanged="@(async (e) => await ColumnsUpdated())" />
+                                        </Fh>
+                                        <Fh>
+                                            <Search class="form-control" placeholder="Search Source..." LastValue="true"
+                                                    @bind-Value="_columnFilter.SourceColumn" OnValueChanged="@(async (e) => await ColumnsUpdated())" />
+                                        </Fh>
+                                        <Fh>
+                                            <Search class="form-control" placeholder="Search Target..." LastValue="true"
+                                                    @bind-Value="_columnFilter.TargetColumn" OnValueChanged="@(async (e) => await ColumnsUpdated())" />
+                                        </Fh>
+                                        <Fh />
+                                    </FilterContent>
+                                    <ItemContent>
+                                        <td>@column.Role</td><td>@SourceMappingLabel(column.SourceMappingId, selected.SourceTable.Name)</td>
+                                        <td>@column.SourceColumn</td><td>@column.TargetColumn</td><td>@column.Aggregation</td>
+                                    </ItemContent>
+                                    <MenuContent>
+                                        <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => EditColumnAsync(false)" />
+                                        <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="() => EditColumnAsync(true)" />
+                                    </MenuContent>
+                                </GXTable>
+                            </div>
+                        }
+                        @if (selected.ObjectType == DataVaultObjectType.InformationMart && selected.Columns.Any(c => c.SourceMappingId.HasValue))
+                        {
+                            <button type="button" class="btn btn-secondary" disabled="@(_busy || _creatingMart || _addType != null)" @onclick="() => RefreshMartAsync(selected)">Refresh Mart</button>
+                        }
+                    }
+                    else
+                    {
+                        <p>Select a mapping from the list.</p>
+                    }
+                }
+            </PanelItem>
+        </Panel>
+    </section>
+
+
+</GXLiveView>
+@code {
+    private readonly string _gxTableIdPrefix = "datavaultmappingspanel-" + Guid.NewGuid().ToString("N");
+    private TimeSpan? DailyScheduleTime
+    {
+        get => TimeOnly.TryParse(_draft.Schedule.Time, out var time) ? time.ToTimeSpan() : null;
+        set { _draft.Schedule.Time = value?.ToString(@"hh\:mm\:ss", System.Globalization.CultureInfo.InvariantCulture) ?? ""; }
+    }
+
+    private string DraftSourceName
+    {
+        get => _draft.SourceTable?.Name ?? "";
+        set { if (value != DraftSourceName) _draft.SourceTable = new() { Name = value, Database = Active?.Id ?? Guid.Empty }; }
+    }
+    private string DraftTargetName
+    {
+        get => _draft.TargetTable?.Name ?? "";
+        set { if (value != DraftTargetName) _draft.TargetTable = new() { Name = value, Database = Active?.Id ?? Guid.Empty }; }
+    }
+
+    private readonly GXDataVaultTableMapping _mappingFilter = new() { };
+    private ScheduleType? _scheduleTypeFilter;
+    private static readonly ScheduleType?[] MappingScheduleTypes =
+        Enum.GetValues<ScheduleType>().Select(type => (ScheduleType?)type).Prepend(null).ToArray();
+
+    private readonly GXDataVaultColumnMapping _columnFilter = new() { Role = null };
+
+    private static readonly DataVaultObjectType?[] MappingObjectTypes =
+        Enum.GetValues<DataVaultObjectType>().Select(type => (DataVaultObjectType?)type).Prepend(null).ToArray();
+
+    private static readonly DataVaultColumnRole?[] MappingRoleTypes =
+        Enum.GetValues<DataVaultColumnRole>().Select(type => (DataVaultColumnRole?)type).Prepend(null).ToArray();
+
+    [Parameter] public string Title { get; set; } = "Data Vault Model";
+    [Parameter] public DataVaultObjectType? ObjectTypeFilter { get; set; }
+    private IEnumerable<GXDataVaultTableMapping> VisibleMappings => SelectedDatabaseMappings
+        .Where(mapping => ObjectTypeFilter == null || mapping.ObjectType == ObjectTypeFilter);
+    private bool IsMappedMart => _draft.ObjectType == DataVaultObjectType.InformationMart && _draft.Columns.Any(c => c.SourceMappingId.HasValue);
+    private string SourceMappingLabel(Guid? id, string sourceTable) => id == null
+        ? sourceTable
+        : _rows.FirstOrDefault(m => m.Id == id)?.TargetTable.Name ?? id.ToString()!;
+    private async Task RefreshMartAsync(GXDataVaultTableMapping mapping)
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            var database = _databases.FirstOrDefault(d => d.Id == mapping.Database)
+                ?? throw new InvalidOperationException("Select a mapped database.");
+            int rows = await Api.RefreshMartAsync(database.Id, mapping.Id, CancellationToken.None);
+            _message = $"Refreshed {mapping.TargetTable.Name}: {rows} rows.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task StartSelectedMappingAsync()
+    {
+        if (_busy || _action != CrudAction.None || _creatingMart || _addType != null || _activeMapping == null) return;
+        var mapping = _activeMapping;
+        _busy = true;
+        _message = $"Running {mapping.TargetTable.Name}...";
+        try
+        {
+            int rows = await Api.StartDataVaultMappingAsync(mapping.Id, CancellationToken.None);
+            _message = $"Completed {mapping.TargetTable.Name}: {rows} rows.";
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+    [Inject] public IGXTopMenu TopMenu { get; set; } = default!;
+    private DataVaultObjectType? _addType;
+    private bool _creatingMart;
+    private bool CanAddMartFromSelection => SelectedDatabaseMappings.Any(mapping =>
+        mapping.ObjectType is DataVaultObjectType.Staging or DataVaultObjectType.Hub or DataVaultObjectType.Satellite &&
+        string.Equals(mapping.TargetTable.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase));
+    private void OpenMartDialog()
+    {
+        if (_busy || _action != CrudAction.None || _addType != null) return;
+        if (Active == null || !CanAddMartFromSelection)
+        {
+            _message = "Select a Stage, Hub or Satellite mapping before adding a Mart.";
+            return;
+        }
+        _creatingMart = true;
+    }
+    private void OpenMartFromStage()
+    {
+        if (_activeMapping?.ObjectType != DataVaultObjectType.Staging) return;
+        _selectedSourceTable = _activeMapping.TargetTable.Name;
+        OpenMartDialog();
+    }
+    private void CloseMartDialog() => _creatingMart = false;
+    private async Task MartCreatedAsync(GXCreateVaultTableResult result)
+    {
+        _creatingMart = false;
+        _message = result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.";
+        await LoadAsync();
+    }
+    private string? _selectedSourceTable;
+    private IEnumerable<string> StageTableNames => SelectedDatabaseMappings
+        .Where(mapping => mapping.ObjectType == DataVaultObjectType.Staging)
+        .Select(mapping => mapping.TargetTable.Name).Distinct(StringComparer.OrdinalIgnoreCase);
+    private void ShowTableMenu(string table)
+    {
+        if (_creatingMart) return;
+        _selectedSourceTable = table;
+        UpdateTopMenu();
+    }
+    private void UpdateTopMenu()
+    {
+        if (TopMenu == null) return;
+        TopMenu.Clear();
+        TopMenu.EditContext = null;
+        TopMenu.AddMenuItems(new[] { new GXMenuItem("Add Stage", null, EventCallback.Factory.Create(this, StartAddStage)) });
+        TopMenu.AddMenuItems(new[] { DataVaultObjectType.Hub, DataVaultObjectType.Link,
+            DataVaultObjectType.Satellite, DataVaultObjectType.Reference }.Select(type =>
+    new GXMenuItem($"Add {type}", null, EventCallback.Factory.Create(this, () => OpenAddDialog(type)))));
+        TopMenu.AddMenuItems(new[] { new GXMenuItem("Add Mart", null, EventCallback.Factory.Create(this, OpenMartDialog)) });
+    }
+    private string? _vaultSource;
+    private Task OpenAddDialog(DataVaultObjectType type)
+    {
+        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None) return Task.CompletedTask;
+        if (Active == null) { _message = "Select a configured database."; return Task.CompletedTask; }
+        var selected = _activeMapping != null && SelectedDatabaseMappings.Contains(_activeMapping) &&
+            string.Equals(_activeMapping.TargetTable.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase)
+            ? _activeMapping
+            : SelectedDatabaseMappings.FirstOrDefault(m => string.Equals(m.TargetTable.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase));
+        var stage = SelectedDatabaseMappings.FirstOrDefault(m => m.ObjectType == DataVaultObjectType.Staging &&
+            string.Equals(m.SourceTable.Name, selected?.SourceTable.Name, StringComparison.OrdinalIgnoreCase));
+        bool useHubSource = selected?.ObjectType == DataVaultObjectType.Hub &&
+            type is DataVaultObjectType.Satellite or DataVaultObjectType.Link or DataVaultObjectType.Reference;
+        _vaultSource = stage?.TargetTable.Name ?? (useHubSource ? selected!.SourceTable.Name :
+            _tableChoices.Contains(_selectedSourceTable ?? "", StringComparer.OrdinalIgnoreCase) ? _selectedSourceTable : null);
+        _addType = type;
+        _message = null;
+        return Task.CompletedTask;
+    }
+    private void CloseVaultDialog() => _addType = null;
+    private async Task VaultMappingCreatedAsync(GXCreateVaultTableResult result)
+    {
+        _addType = null;
+        _message = result.MappingError ?? $"Saved mapping for {result.TableName}.";
+        await LoadAsync();
+    }
+    private static bool IsKeyColumn(DataVaultColumnRole role) => role is
+        DataVaultColumnRole.HashKey or DataVaultColumnRole.BusinessKey or DataVaultColumnRole.ParentHashKey or DataVaultColumnRole.LinkHashKey;
+
+    private void CloseMappingDialog()
+    {
+        if (!_busy) CancelEdit();
+    }
+    private IEnumerable<GXDataVaultTableMapping> SelectedDatabaseMappings => _rows.Where(mapping => mapping.Database == Active?.Id);
+    private async Task SelectMapping(GXDataVaultTableMapping mapping)
+    {
+        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || !VisibleMappings.Contains(mapping)) return;
+        _activeColumn = null;
+        _activeMapping = mapping;
+        ShowTableMenu(mapping.TargetTable.Name);
+        await LoadStageSchemaAsync();
+    }
+    private GXTableSchema? _stageSchema;
+    private string? _stageSchemaError;
+    private bool _stageSchemaLoading;
+    private int _stageSchemaRequest;
+    private async Task LoadStageSchemaAsync()
+    {
+        int request = ++_stageSchemaRequest;
+        _stageSchema = null;
+        _stageSchemaError = null;
+        _stageSchemaLoading = false;
+        var mapping = _activeMapping;
+        if (mapping?.ObjectType != DataVaultObjectType.Staging) return;
+        var database = _databases.FirstOrDefault(d => d.Id == mapping.Database);
+        if (database is null) { _stageSchemaError = "The Stage database was not found."; return; }
+        _stageSchemaLoading = true;
+        try
+        {
+            var schema = await Api.GetColumnsAsync(database, mapping.TargetTable.Name, CancellationToken.None);
+            if (request == _stageSchemaRequest && ReferenceEquals(mapping, _activeMapping)) _stageSchema = schema;
+        }
+        catch (Exception ex)
+        {
+            if (request == _stageSchemaRequest && ReferenceEquals(mapping, _activeMapping)) _stageSchemaError = ex.Message;
+        }
+        finally { if (request == _stageSchemaRequest) _stageSchemaLoading = false; }
+    }
+    private IReadOnlyList<string> _sourceColumns = [], _targetColumns = [];
+    private int _columnRequest;
+    private async Task LoadColumnChoicesAsync()
+    {
+        int request = ++_columnRequest;
+        _sourceColumns = [];
+        _targetColumns = [];
+        var database = Active;
+        if (database == null) return;
+        var draft = _draft;
+        try
+        {
+            var target = string.IsNullOrWhiteSpace(draft.TargetTable.Name) ? null
+                : await Api.GetColumnsAsync(database, draft.TargetTable.Name, CancellationToken.None);
+            if (request != _columnRequest) return;
+            _targetColumns = target?.Columns.Select(column => column.Name).ToArray() ?? [];
+        }
+        catch (Exception ex)
+        {
+            if (request == _columnRequest) _message = $"Could not load target columns: {ex.Message}";
+        }
+        try
+        {
+            var sources = new List<string>();
+            var sourceMappings = SelectedDatabaseMappings.Where(mapping =>
+                string.Equals(mapping.SourceTable.Name, draft.SourceTable.Name, StringComparison.OrdinalIgnoreCase) &&
+                (draft.ObjectType == DataVaultObjectType.InformationMart
+                    ? mapping.ObjectType != DataVaultObjectType.Staging && mapping.ObjectType != DataVaultObjectType.InformationMart
+                    : mapping.ObjectType == DataVaultObjectType.Staging)).ToList();
+            if (draft.ObjectType == DataVaultObjectType.Staging)
+            {
+                if (!string.IsNullOrWhiteSpace(draft.SourceTable.Name))
+                {
+                    if (_tableChoices.Contains(draft.SourceTable.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var schema = await Api.GetColumnsAsync(database, draft.SourceTable.Name, CancellationToken.None);
+                        sources.AddRange(schema.Columns.Select(column => column.Name));
+                    }
+                    else
+                    {
+                        sources.AddRange(draft.Columns.Select(column => column.SourceColumn)
+                            .Where(name => !string.IsNullOrWhiteSpace(name)));
+                        if (sources.Count == 0 && request == _columnRequest)
+                            _message = "The incoming source table is not in this database and has no configured source columns.";
+                    }
+                }
+            }
+            else
+            {
+                if (sourceMappings.Count == 0 && _tableChoices.Contains(draft.SourceTable.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    var sourceSchema = await Api.GetColumnsAsync(database, draft.SourceTable.Name, CancellationToken.None);
+                    sources.AddRange(sourceSchema.Columns.Select(column => column.Name));
+                }
+                foreach (var mapping in sourceMappings)
+                {
+                    string sourceTable = _tableChoices.Contains(mapping.TargetTable.Name, StringComparer.OrdinalIgnoreCase)
+                        ? mapping.TargetTable.Name : mapping.SourceTable.Name;
+                    var schema = await Api.GetColumnsAsync(database, sourceTable, CancellationToken.None);
+                    // The scheduler resolves logical source names through each mapping.
+                    sources.AddRange(mapping.Columns.Where(column => schema.Columns.Any(actual =>
+                        string.Equals(actual.Name, column.TargetColumn, StringComparison.OrdinalIgnoreCase)))
+                        .Select(column => column.SourceColumn).Where(name => !string.IsNullOrWhiteSpace(name)));
+                }
+            }
+            if (request != _columnRequest) return;
+            _sourceColumns = sources.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        catch (Exception ex)
+        {
+            if (request == _columnRequest) _message = $"Could not load table columns: {ex.Message}";
+        }
+    }
+
+    private GXDataVaultTableMapping _draft = new() { Schedule = new() };
+    private IReadOnlyList<string> _tableChoices = [];
+    private IReadOnlyList<string> _editingTableChoices = [];
+    private int _tableRequest;
+    private static readonly JsonSerializerOptions MappingJsonOptions = CreateMappingJsonOptions();
+    private static JsonSerializerOptions CreateMappingJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        return options;
+    }
+    private IEnumerable<string> StageSources => _rows.Where(mapping =>
+        mapping.Database == Active?.Id && mapping.ObjectType == DataVaultObjectType.Staging)
+        .Select(mapping => mapping.SourceTable.Name).Distinct(StringComparer.OrdinalIgnoreCase);
+    private string StageLabel(string source) => string.Join(", ", _rows.Where(mapping =>
+        mapping.Database == Active?.Id && mapping.ObjectType == DataVaultObjectType.Staging &&
+        string.Equals(mapping.SourceTable?.Name, source, StringComparison.OrdinalIgnoreCase)).Select(mapping => mapping.TargetTable.Name));
+    private IEnumerable<GXDataVaultTableMapping> RelatedVaultTables => _rows.Where(mapping =>
+        mapping.Database == Active?.Id &&
+        mapping.ObjectType != DataVaultObjectType.Staging && mapping.ObjectType != DataVaultObjectType.InformationMart &&
+        string.Equals(mapping.SourceTable?.Name, _draft.SourceTable?.Name, StringComparison.OrdinalIgnoreCase));
+    private async Task LoadTableChoicesAsync()
+    {
+        int request = ++_tableRequest;
+        var database = Active;
+        if (_action == CrudAction.None && _activeMapping != null && !SelectedDatabaseMappings.Contains(_activeMapping))
+            _activeMapping = null;
+        CloseMartDialog();
+        UpdateTopMenu();
+        _selectedSourceTable = null;
+
+        _tableChoices = [];
+        if (database != null)
+        {
+            try
+            {
+                var tables = await Api.GetTablesAsync(database, CancellationToken.None);
+                if (request != _tableRequest || Active != database) return;
+                _tableChoices = tables;
+            }
+            catch (Exception ex) { if (request == _tableRequest) _message = ex.Message; }
+        }
+        if (request == _tableRequest && _action != CrudAction.None) await LoadColumnChoicesAsync();
+    }
+
+    private CrudAction _action = CrudAction.None;
+    private readonly List<GXDataVaultTableMapping> _rows = [];
+    private readonly List<GXDatabase> _databases = [];
+    private GXTable<GXDataVaultTableMapping>? _table;
+    private GXDataVaultTableMapping? _activeMapping;
+    private GXDatabase? Active { get; set; }
+    private Guid? _editingId;
+    private string _mappingJson = "{}";
+    private string? _message;
+    private string? _sourceFilter;
+    private string? _targetFilter;
+    private bool _busy;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        if (_busy || _creatingMart) return;
+        _busy = true;
+        try { await RefreshMappingsAsync(); }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task RefreshMappingsAsync()
+    {
+        IReadOnlyList<GXDatabase> databases = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
+        IReadOnlyList<GXDataVaultTableMapping> rows = await Api.GetDataVaultMappingsAsync(CancellationToken.None);
+        Guid? selectedDatabase = Active?.Id;
+        Guid? selectedMapping = _activeMapping?.Id;
+        _databases.Clear();
+        _databases.AddRange(databases);
+        Active = _databases.FirstOrDefault(database => database.Id == selectedDatabase) ?? _databases.FirstOrDefault();
+        await LoadTableChoicesAsync();
+        _rows.Clear();
+        _rows.AddRange(rows);
+        _activeMapping = VisibleMappings.FirstOrDefault(mapping => mapping.Id == selectedMapping);
+        if (_activeMapping != null) ShowTableMenu(_activeMapping.TargetTable.Name);
+        await LoadStageSchemaAsync();
+        await Updated();
+    }
+
+    private ValueTask<ItemsProviderResult<GXDataVaultTableMapping>> GetMappingItems(GXItemsProviderRequest request)
+    {
+        GXDataVaultTableMapping[] rows = VisibleMappings.Where(row =>
+            (_mappingFilter.ObjectType == null || row.ObjectType == _mappingFilter.ObjectType) &&
+            (_scheduleTypeFilter == null || HasOwnSchedule(row) && row.Schedule.Type == _scheduleTypeFilter) &&
+            (string.IsNullOrWhiteSpace(_sourceFilter) || row.SourceTable.Name.Contains(_sourceFilter, StringComparison.OrdinalIgnoreCase) == true) &&
+            (string.IsNullOrWhiteSpace(_targetFilter) || row.TargetTable.Name.Contains(_targetFilter, StringComparison.OrdinalIgnoreCase) == true)).ToArray();
+        if (_activeMapping != null && !rows.Contains(_activeMapping)) _activeMapping = null;
+        return ValueTask.FromResult(new ItemsProviderResult<GXDataVaultTableMapping>(rows, rows.Length));
+    }
+
+    private static bool HasOwnSchedule(GXDataVaultTableMapping mapping) => mapping.ObjectType is DataVaultObjectType.Staging or DataVaultObjectType.InformationMart;
+
+    private static string? ScheduleLabel(GXSchedule? schedule)
+    {
+        if (schedule == null)
+        {
+            return null;
+        }
+        return schedule.Type switch
+        {
+            ScheduleType.Interval => $"{schedule.Type} ({schedule.IntervalSeconds} seconds)",
+            ScheduleType.Daily => $"{schedule.Type} {schedule.Time}",
+            ScheduleType.Cron => $"{schedule.Type} {schedule.Expression}",
+            _ => schedule.Type.ToString()
+        };
+    }
+
+    private ValueTask<ItemsProviderResult<GXDataVaultColumnMapping>> GetMappingColumnItems(GXItemsProviderRequest request)
+    {
+        var columns = (_activeMapping?.Columns ?? [])
+            .Where(column => (_columnFilter.Role == null || column.Role == _columnFilter.Role) &&
+                MatchesColumnSearch(SourceMappingLabel(column.SourceMappingId, _activeMapping!.SourceTable.Name), _columnSourceTableFilter) &&
+                MatchesColumnSearch(column.SourceColumn, _columnFilter.SourceColumn) &&
+                MatchesColumnSearch(column.TargetColumn, _columnFilter.TargetColumn)).ToList();
+        if (_activeColumn != null && !columns.Contains(_activeColumn)) _activeColumn = null;
+        return ValueTask.FromResult(new ItemsProviderResult<GXDataVaultColumnMapping>(columns, columns.Count));
+    }
+    private string? _columnSourceTableFilter;
+    private static bool MatchesColumnSearch(string? value, string? filter) =>
+        string.IsNullOrWhiteSpace(filter) || value?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true;
+    private GXTable<GXDataVaultColumnMapping>? _columnTable;
+    private GXDataVaultColumnMapping? _activeColumn, _columnDraft;
+    private bool _deleteColumn;
+
+    private async Task EditColumnAsync(bool delete)
+    {
+        if (_activeColumn == null || _activeMapping == null || _busy || _action != CrudAction.None) return;
+        Guid columnId = _activeColumn.Id;
+        await EditAsync(_activeMapping);
+        if (_action != CrudAction.Update) return;
+        _columnDraft = _draft.Columns.FirstOrDefault(c => c.Id == columnId);
+        _deleteColumn = delete;
+        if (_columnDraft == null) { CancelEdit(); _message = "The column was not found. Refresh the mapping."; }
+        else if (_columnDraft.SourceMappingId is Guid sourceId && _rows.FirstOrDefault(m => m.Id == sourceId) is { } source && Active != null)
+        {
+            try
+            {
+                var schema = await Api.GetColumnsAsync(Active, source.TargetTable.Name, CancellationToken.None);
+                _sourceColumns = schema.Columns.Select(c => c.Name).ToArray();
+            }
+            catch (Exception ex) { _message = ex.Message; }
+        }
+    }
+
+    private async Task SaveColumnAsync()
+    {
+        if (_busy || _columnDraft == null) return;
+        var column = _columnDraft;
+        int index = _draft.Columns.IndexOf(column);
+        if (_deleteColumn) _draft.Columns.Remove(column);
+        await SaveMappingAsync();
+        if (_columnDraft != null && _deleteColumn) _draft.Columns.Insert(index, column);
+    }
+    private async Task ColumnsUpdated()
+    {
+        if (_columnTable != null) await _columnTable.RefreshDataAsync(true);
+    }
+    private async Task Updated()
+    {
+        if (_table != null) await _table.RefreshDataAsync(true);
+    }
+
+    private async Task EditAsync(GXDataVaultTableMapping? mapping)
+    {
+        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
+        _busy = true;
+        _message = null;
+        try
+        {
+            Guid id = mapping.Id;
+            GXDataVaultMappingDetails details = await Api.GetDataVaultMappingAsync(id, CancellationToken.None);
+            Guid databaseId = details.Database;
+            GXDatabase? database = _databases.FirstOrDefault(d => d.Id == databaseId);
+            if (database == null)
+            {
+                throw new InvalidOperationException("The mapping database was not found. Refresh the list.");
+            }
+            GXDataVaultTableMapping draft = details.Mapping ?? throw new InvalidOperationException("Mapping settings were not returned.");
+            _editingTableChoices = _tableChoices;
+            Active = database;
+            _activeMapping = mapping;
+            _editingId = id;
+            _mappingJson = JsonSerializer.Serialize(draft, MappingJsonOptions);
+            _draft = draft;
+            await LoadTableChoicesAsync();
+            await LoadColumnChoicesAsync();
+            _action = CrudAction.Update;
+            _table = null;
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private bool _stageScheduleOnly;
+    private GXDatabase? _stageDatabase;
+    private IReadOnlyList<string> _stageTables = [];
+    private int _stageTableRequest;
+    private string? StageTableName
+    {
+        get => _draft.TargetTable?.Name;
+        set
+        {
+            var table = new GXTable { Name = value, Database = _stageDatabase?.Id ?? Guid.Empty };
+            _draft.SourceTable = table;
+            _draft.TargetTable = table;
+        }
+    }
+    private async Task StageDatabaseChanged()
+    {
+        _draft.Database = _stageDatabase?.Id ?? Guid.Empty;
+        StageTableName = string.Empty;
+        await LoadStageTablesAsync();
+    }
+    private async Task LoadStageTablesAsync()
+    {
+        int request = ++_stageTableRequest;
+        var database = _stageDatabase;
+        _stageTables = [];
+        if (database == null) return;
+        try
+        {
+            var tables = await Api.GetTablesAsync(database, CancellationToken.None);
+            if (request == _stageTableRequest && _stageScheduleOnly && _stageDatabase == database)
+                _stageTables = tables;
+        }
+        catch (Exception ex) { if (request == _stageTableRequest && _stageScheduleOnly) _message = ex.Message; }
+    }
+    private async Task StartAddStage()
+    {
+        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None) return;
+        if (Active == null)
+        {
+            _message = "Select a configured database before adding a Stage schedule.";
+            return;
+        }
+        var table = _activeMapping?.TargetTable;
+        if (table == null || !string.Equals(table.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase))
+            table = new() { Name = _selectedSourceTable ?? string.Empty, Database = Active.Id };
+        _draft = new()
+        {
+            ObjectType = DataVaultObjectType.Staging,
+            Database = Active.Id,
+            SourceTable = table,
+            TargetTable = table,
+            Columns = [],
+            Schedule = new()
+        };
+        _editingId = null;
+        _editingTableChoices = _tableChoices;
+        _stageScheduleOnly = true;
+        _stageDatabase = Active;
+        _action = CrudAction.Create;
+        _message = null;
+        _table = null;
+        await LoadStageTablesAsync();
+    }
+
+    private void ConfirmDelete(GXDataVaultTableMapping? mapping)
+    {
+        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
+        _activeMapping = mapping;
+        _editingId = mapping.Id;
+        _action = CrudAction.Delete;
+        _table = null;
+        _message = null;
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_busy || _action != CrudAction.Delete || _editingId == null) return;
+        _busy = true;
+        try
+        {
+            await Api.DeleteDataVaultMappingAsync(_editingId.Value, CancellationToken.None);
+            CancelEdit();
+            _message = "Mapping deleted.";
+            await RefreshMappingsAsync();
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveMappingAsync()
+    {
+        if (_busy || _action is not (CrudAction.Create or CrudAction.Update)) return;
+        _busy = true;
+        try
+        {
+            GXDatabase? database = _stageScheduleOnly ? _stageDatabase : Active;
+            int index = database == null ? -1 : _databases.IndexOf(database);
+            if (index < 0) throw new InvalidOperationException("Select a configured database.");
+            if (string.IsNullOrWhiteSpace(_draft.SourceTable?.Name) || string.IsNullOrWhiteSpace(_draft.TargetTable?.Name))
+                throw new InvalidOperationException("Select a source and target table.");
+            if (IsMappedMart && (_draft.Columns.Any(c => c.SourceMappingId is null) ||
+                _draft.Schedule?.Type is not (ScheduleType.Manual or ScheduleType.Interval) ||
+                _draft.Schedule?.Type == ScheduleType.Interval && _draft.Schedule.IntervalSeconds is not > 0))
+                throw new InvalidOperationException("Select a Manual or positive Interval schedule and preserve the Mart source mappings.");
+            if (!IsMappedMart && _draft.ObjectType != DataVaultObjectType.Staging && !StageSources.Contains(_draft.SourceTable.Name, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Select a configured Stage in this database.");
+            if (!IsMappedMart && _draft.ObjectType == DataVaultObjectType.InformationMart && !RelatedVaultTables.Any())
+                throw new InvalidOperationException("Configure Hub, Link, Satellite or Reference mappings for this Stage first.");
+            if (_draft.ObjectType != DataVaultObjectType.Staging && (_draft.Columns.Count == 0 || _draft.Columns.Any(column => string.IsNullOrWhiteSpace(column.TargetColumn))))
+                throw new InvalidOperationException("Configure the target columns.");
+            await Api.SaveDataVaultMappingAsync(_editingId, database!.Id, _draft, CancellationToken.None);
+            if (_stageScheduleOnly) _activeMapping = null;
+            else if (_activeMapping != null) _activeMapping.Database = database.Id;
+            CancelEdit();
+            Active = database;
+            _message = "Mapping saved.";
+            await RefreshMappingsAsync();
+        }
+        catch (Exception ex) { _message = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void CancelEdit()
+    {
+        ++_tableRequest;
+        ++_columnRequest;
+        if (_activeMapping != null && _databases.FirstOrDefault(d => d.Id == _activeMapping.Database) is { } database && Active != database)
+        {
+            Active = database;
+            _tableChoices = _editingTableChoices;
+        }
+        _stageScheduleOnly = false;
+        _stageDatabase = null;
+        ++_stageTableRequest;
+        _stageTables = [];
+        _columnDraft = null;
+        _activeColumn = null;
+        _action = CrudAction.None;
+        _addType = null;
+        _editingId = null;
+        _mappingJson = "{}";
+        _table = null;
+        if (_activeMapping != null) ShowTableMenu(_activeMapping.TargetTable.Name);
+    }
+
+    private string GetMappingDatabaseLabel(GXDataVaultTableMapping mapping)
+    {
+        GXDatabase? database = _databases.FirstOrDefault(d => d.Id == mapping.Database);
+        return database == null ? "Unknown database" : GetDatabaseLabel(database);
+    }
+
+    private static string GetDatabaseLabel(GXDatabase database)
+        => string.IsNullOrWhiteSpace(database.Description) ? database.Type.ToString() : $"{database.Description} ({database.Type})";
+}
+
+
+
+
+

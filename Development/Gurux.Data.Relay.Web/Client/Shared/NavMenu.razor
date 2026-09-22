@@ -1,0 +1,105 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">Gurux Data Relay</a>
+        <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+    </div>
+</div>
+
+<div class="@NavMenuCssClass" @onclick="ToggleNavMenu">
+    <nav class="flex-column">
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <span class="oi oi-home" aria-hidden="true"></span> Overview
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="databases">
+                <span class="oi oi-hard-drive" aria-hidden="true"></span> Databases
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="client">
+                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span> Client
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="server">
+                <span class="oi oi-data-transfer-download" aria-hidden="true"></span> Server
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="datavault">
+                <span class="oi oi-lock-locked" aria-hidden="true"></span> Data Vault
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="settings">
+                <span class="oi oi-cog" aria-hidden="true"></span> Settings
+            </NavLink>
+        </div>
+        <GXLiveView Kinds="GXRelayChangeKind.Store" OnChanged="LoadUpdateStatusAsync">
+            @if (_updateRequired)
+            {
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="update">
+                        <span class="oi oi-reload" aria-hidden="true"></span> Update
+                    </NavLink>
+                </div>
+            }
+        </GXLiveView>
+    </nav>
+</div>
+
+@code {
+    [Inject] public GXAdminApiClient Api { get; set; } = default!;
+    private bool _updateRequired;
+    protected override Task OnInitializedAsync() => LoadUpdateStatusAsync();
+    private async Task LoadUpdateStatusAsync()
+    {
+        try { _updateRequired = (await Api.GetConfigurationTableChangesAsync(CancellationToken.None)).Count != 0; }
+        catch (Exception) { _updateRequired = false; }
+    }
+    private bool collapseNavMenu = true;
+
+    private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
+
+    private void ToggleNavMenu()
+    {
+        collapseNavMenu = !collapseNavMenu;
+    }
+}
+

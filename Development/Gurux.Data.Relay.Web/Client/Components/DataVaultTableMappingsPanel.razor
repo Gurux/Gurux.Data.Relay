@@ -1,0 +1,121 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Configuration
+@using Gurux.Data.Relay.Shared
+@using Gurux.UI.Components.Panel
+
+<Panel Height="auto">
+    <PanelItem Height="auto" Width="35%" Id="datavault-left">
+        <h3>Database tables</h3>
+        @foreach (string table in Tables)
+        {
+            <div>
+                <button type="button" class="@(table == _selectedTable ? "btn btn-primary" : "btn btn-link")"
+                        @onclick="() => SelectTableAsync(table)">
+                    @table
+                </button>
+            </div>
+        }
+        @if (!Tables.Any())
+        {
+            <p>No tables available.</p>
+        }
+    </PanelItem>
+    <PanelItem Height="auto" Id="datavault-right">
+        <h3>@(Export ? "Export mappings" : "Import mappings")</h3>
+        @if (_selectedTable == null)
+        {
+            <p>Select a database table.</p>
+        }
+        else
+        {
+            <h4>@_selectedTable</h4>
+            @foreach (var mapping in SelectedMappings)
+            {
+                <div class="mb-3">
+                    <strong>@mapping.ObjectType: @mapping.SourceTable.Name → @mapping.TargetTable.Name</strong>
+                    <button type="button" class="btn btn-link" @onclick="() => OnEdit.InvokeAsync(mapping)">Edit</button>
+                    <button type="button" class="btn btn-link" @onclick="() => OnDelete.InvokeAsync(mapping)">Delete</button>
+                    <ul>
+                        @foreach (var column in mapping.Columns)
+                        {
+                            <li>@column.SourceColumn → @column.TargetColumn (@column.Role)</li>
+                        }
+                    </ul>
+                </div>
+            }
+            @if (!SelectedMappings.Any())
+            {
+                <p>No mappings for this table.</p>
+            }
+            <button type="button" class="btn btn-success" @onclick="() => OnAdd.InvokeAsync()">Add mapping</button>
+        }
+    </PanelItem>
+</Panel>
+
+@code {
+    [Parameter] public IReadOnlyList<string> Tables { get; set; } = [];
+    [Parameter] public IEnumerable<GXDataVaultTableMapping> Mappings { get; set; } = [];
+    [Parameter] public EventCallback<string> OnTableSelected { get; set; }
+    private async Task SelectTableAsync(string table)
+    {
+        _selectedTable = table;
+        await OnTableSelected.InvokeAsync(table);
+    }
+    [Parameter] public bool Export { get; set; }
+    [Parameter] public EventCallback<GXDataVaultTableMapping> OnEdit { get; set; }
+    [Parameter] public EventCallback<GXDataVaultTableMapping> OnDelete { get; set; }
+    [Parameter] public EventCallback OnAdd { get; set; }
+    private string? _selectedTable;
+    protected override void OnParametersSet()
+    {
+        if (_selectedTable != null && !Tables.Contains(_selectedTable)) _selectedTable = null;
+    }
+    private IEnumerable<GXDataVaultTableMapping> SelectedMappings
+    {
+        get
+        {
+            if (!Export)
+                return Mappings.Where(mapping => string.Equals(mapping.TargetTable.Name, _selectedTable, StringComparison.OrdinalIgnoreCase));
+            var sources = Mappings.Where(mapping => string.Equals(mapping.TargetTable.Name, _selectedTable, StringComparison.OrdinalIgnoreCase))
+                .Select(mapping => mapping.SourceTable.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            bool staging = Mappings.Any(mapping => mapping.ObjectType == DataVaultObjectType.Staging &&
+                string.Equals(mapping.TargetTable.Name, _selectedTable, StringComparison.OrdinalIgnoreCase));
+            return Mappings.Where(mapping => sources.Contains(mapping.SourceTable.Name) &&
+                (staging ? mapping.ObjectType != DataVaultObjectType.Staging && mapping.ObjectType != DataVaultObjectType.InformationMart
+                    : mapping.ObjectType == DataVaultObjectType.InformationMart) &&
+                !string.Equals(mapping.TargetTable.Name, _selectedTable, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+}

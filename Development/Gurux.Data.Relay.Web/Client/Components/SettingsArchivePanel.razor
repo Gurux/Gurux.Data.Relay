@@ -1,0 +1,116 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Gurux.Data.Relay.Shared.Enums
+
+@inject GXAdminApiClient Api
+
+<section class="panel">
+    <h2>Import / export all settings</h2>
+    <p>One JSON file contains all client, server and Data Vault settings, including connection strings and passwords. Keep it private. Database data and transfer history are not included.</p>
+    <fieldset disabled="@_busy">
+        <div class="actions-row">
+            <a class="btn btn-secondary" href="api/settings/archive/export" download="Gurux.Data.Relay.settings.json">Export all settings</a>
+            <label>Import settings file <InputFile OnChange="SelectFileAsync" accept=".json,application/json" /></label>
+        </div>
+        @if (_archive is not null)
+        {
+            <p>@_fileName — Client databases: @_archive.Client.Databases.Count; Server databases: @_archive.Server.Databases.Count; Data Vault databases: @_archive.DataVault.Databases.Count.</p>
+            <p>Import replaces all current client, server and Data Vault settings.</p>
+            <button type="button" class="btn btn-primary" @onclick="ImportAsync">Import all settings</button>
+            <button type="button" class="btn btn-secondary" @onclick="Clear">Cancel</button>
+        }
+    </fieldset>
+    @if (_busy)
+    {
+        <p role="status">Importing settings…</p>
+    }
+    @if (_message is not null)
+    {
+        <p role="status">@_message</p>
+    }
+    @if (_error is not null)
+    {
+        <p class="notice" role="alert">@_error</p>
+    }
+</section>
+
+@code {
+    [Parameter] public EventCallback OnImported { get; set; }
+    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+    private GXSettingsArchive? _archive;
+    private string? _json, _fileName, _error, _message;
+    private bool _busy;
+    private void Clear() { _archive = null; _json = null; _fileName = null; }
+    private async Task SelectFileAsync(InputFileChangeEventArgs args)
+    {
+        Clear();
+        _error = _message = null;
+        try
+        {
+            await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            string json = await reader.ReadToEndAsync();
+            var archive = JsonSerializer.Deserialize<GXSettingsArchive>(json, Options)
+                ?? throw new JsonException("The settings file must contain a JSON object.");
+            if (archive.FormatVersion != 1 || archive.Client?.Mode != ApplicationMode.Client ||
+                archive.Server?.Mode != ApplicationMode.Server || archive.DataVault?.Mode != ApplicationMode.DataVault ||
+                archive.Client.Databases is null || archive.Server.Databases is null || archive.DataVault.Databases is null)
+                throw new JsonException("Select a version 1 settings export containing client, server and datavault settings.");
+            _archive = archive;
+            _json = json;
+            _fileName = args.File.Name;
+        }
+        catch (Exception ex) { _error = $"Could not read settings file: {ex.Message}"; }
+    }
+    private async Task ImportAsync()
+    {
+        if (_busy || _json is null) return;
+        _busy = true;
+        _error = _message = null;
+        try
+        {
+            await Api.ImportAllSettingsAsync(_json, default);
+            Clear();
+            _message = "Client, server and Data Vault settings imported.";
+            await OnImported.InvokeAsync();
+        }
+        catch (Exception ex) { _error = $"Could not import settings: {ex.Message}"; }
+        finally { _busy = false; }
+    }
+}

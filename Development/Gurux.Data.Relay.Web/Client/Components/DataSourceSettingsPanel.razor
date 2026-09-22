@@ -1,0 +1,148 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Web.Client.Services
+@inject GXAdminApiClient Api
+
+@if (_loading)
+{
+    <p>Loading data sources...</p>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger" role="alert">@_error</div>
+}
+else
+{
+    <section class="card mb-3">
+        <div class="card-body">
+            <h3 class="h5">Add data source</h3>
+            <label class="form-label" for="data-source-provider">Data source provider</label>
+            <select id="data-source-provider" class="form-select" @bind="_selectedProvider">
+                <option value="">Select a provider…</option>
+                @foreach (string provider in _overview.Providers)
+                {
+                    <option value="@provider">@ProviderLabel(provider)</option>
+                }
+            </select>
+        </div>
+    </section>
+    @if (_selectedProvider.Equals("modbus-tcp", StringComparison.OrdinalIgnoreCase))
+    {
+        @*<ModbusDataSourceEditor Saved="ReloadAsync" />*@
+    }
+    else if (_selectedProvider.Equals("dlms-wrapper", StringComparison.OrdinalIgnoreCase))
+    {
+        @*<DlmsWrapperDataSourceEditor Saved="ReloadAsync" />*@
+    }
+    else if (!string.IsNullOrWhiteSpace(_selectedProvider))
+    {
+        <div class="alert alert-warning" role="alert">This installed provider does not yet have a settings editor.</div>
+    }
+    <p><strong>Installed providers:</strong> @(_overview.Providers.Count == 0 ? "None" : string.Join(", ", _overview.Providers))</p>
+    @if (_overview.Sources.Count == 0)
+    {
+        <p>No data sources are configured.</p>
+    }
+    else
+    {
+        @foreach (GXDataSourceSettingsSummary source in _overview.Sources)
+        {
+            <section class="card mb-3">
+                <div class="card-header d-flex justify-content-between">
+                    <span>@source.Provider</span>
+                    <span>
+                        <span class="badge @(source.Enabled ? "bg-success" : "bg-secondary")">@(source.Enabled ? "Enabled" : "Disabled")</span>
+                        <button class="btn btn-sm btn-outline-danger ms-2" @onclick="() => DeleteAsync(source.InstanceId)">Remove</button>
+                    </span>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-sm-3">Instance</dt>
+                        <dd class="col-sm-9">@source.InstanceId</dd>
+                        <dt class="col-sm-3">Capabilities</dt>
+                        <dd class="col-sm-9">@(source.Pull ? "Pull" : "")@(source.Pull && source.Streaming ? ", " : "")@(source.Streaming ? "Streaming" : "")</dd>
+                        <dt class="col-sm-3">Routes</dt>
+                        <dd class="col-sm-9">@(source.RouteIds.Count == 0 ? "None" : string.Join(", ", source.RouteIds))</dd>
+                    </dl>
+                    <h3 class="h6 mt-3">Provider settings</h3>
+                    @if (source.Settings.Count == 0)
+                    {
+                        <p class="mb-0">No provider settings.</p>
+                    }
+                    else
+                    {
+                        <dl class="row mb-0">
+                            @foreach ((string key, string value) in source.Settings.OrderBy(setting => setting.Key, StringComparer.OrdinalIgnoreCase))
+                            {
+                                <dt class="col-sm-3">@key</dt>
+                                <dd class="col-sm-9 text-break">@value</dd>
+                            }
+                        </dl>
+                    }
+                </div>
+            </section>
+        }
+    }
+}
+
+@code {
+    private GXDataSourceOverview _overview = new();
+    private bool _loading = true;
+    private string? _error;
+    private string _selectedProvider = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try { _overview = await Api.GetDataSourceOverviewAsync(CancellationToken.None); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+    private async Task DeleteAsync(Guid id)
+    {
+        try { await Api.DeleteDataSourceAsync(id, CancellationToken.None); await ReloadAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private static string ProviderLabel(string provider) => provider.ToLowerInvariant() switch
+    {
+        "modbus-tcp" => "Modbus TCP",
+        "dlms-wrapper" => "DLMS Wrapper (TCP)",
+        _ => provider
+    };
+}

@@ -1,0 +1,258 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@inject GXAdminApiClient Api
+@using Gurux.Data.Relay.Shared
+@using Gurux.Service.Orm.Common.Enums
+@using Microsoft.Extensions.Logging
+
+<GXLiveView Kinds="@(GXRelayChangeKind.Store | GXRelayChangeKind.Configuration)" Busy="@_saving" IsEditing="@(() => _saving || _type != _loadedType || _connectionString != _loadedConnection || _includeStackTrace != _loadedIncludeStackTrace || _eventLogLevel != _loadedEventLogLevel || _communicationLogLevel != _loadedCommunicationLogLevel || _notifyLogChanges != _loadedNotifyLogChanges)" OnChanged="LoadAsync">
+
+    <section class="panel">
+        <h2>Settings</h2>
+        <p class="summary">Configure where Gurux.Data.Relay stores configuration settings.</p>
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <p class="notice">@_message</p>
+        }
+
+        <fieldset class="mb-3">
+            <legend>Configuration database</legend>
+            <select class="form-select" aria-label="Configuration database" disabled="@_saving"
+                    value="@(_catalog.FirstOrDefault(IsSelected)?.Id.ToString() ?? string.Empty)" @onchange="ChangeDatabase">
+                <option value=""></option>
+                @foreach (var database in _catalog)
+                {
+                    <option value="@database.Id">@(string.IsNullOrWhiteSpace(database.Description) ? database.Id.ToString() : database.Description) (@database.Type)</option>
+                }
+            </select>
+            <p class="form-text">Leave empty to use the database type and connection string below.</p>            @if (_catalogError is not null) {
+            <p role="alert">@_catalogError</p>
+                        }
+            <p><a href="databases">Manage databases</a></p>
+            <p>Save switches the configuration store. Existing settings and the database catalog are not copied to the selected database.</p>
+        </fieldset>
+
+        <div class="mb-2">
+            <label>Database type</label>
+            <GXInputDropdown class="form-select" @bind-Value="_type" Items="_databaseTypes" />
+        </div>
+
+        <div class="mb-2">
+            <label>Connection string</label>
+            <InputTextArea class="form-control" rows="4" @bind-Value="_connectionString" @oninput="@(e => { _connectionString = e.Value?.ToString() ?? string.Empty; })"></InputTextArea>
+            @if (_type == DatabaseType.MSSQL)
+            {
+                <small class="form-text text-muted">Example: Server=localhost;Database=Gurux.Data.Relay;User Id=sa;Password=YourPassword;TrustServerCertificate=True;Encrypt=False</small>
+            }
+        </div>
+
+        <div class="mb-2">
+            <label>Event log level</label>
+            <GXInputDropdown TValue="LogLevel" class="form-select" @bind-Value="_eventLogLevel" />
+        </div>
+        <div class="mb-2">
+            <label>Communication log level</label>
+            <GXInputDropdown TValue="LogLevel" class="form-select" @bind-Value="_communicationLogLevel" />
+            <label class="d-block"><input type="checkbox" @bind="_notifyLogChanges" /> Notify log changes</label>
+            <p class="form-text">Trace records transport messages. These settings apply to all modes. Restart the application after saving to apply all logging changes.</p>
+        </div>
+        <div class="mb-2"><label><input type="checkbox" @bind="_includeStackTrace" /> Include stack trace in errors</label></div>
+        <div class="actions-row mt-2">
+            @if (_type != _loadedType || _connectionString != _loadedConnection || _includeStackTrace != _loadedIncludeStackTrace || _eventLogLevel != _loadedEventLogLevel || _communicationLogLevel != _loadedCommunicationLogLevel || _notifyLogChanges != _loadedNotifyLogChanges)
+            {
+                <button class="btn btn-secondary" @onclick="LoadAsync">Discard changes</button>
+            }
+            <button class="btn btn-outline-secondary" disabled="@(!_settingsLoaded)" @onclick="TestAsync">Test</button>
+            <button class="btn btn-success" disabled="@(!_settingsLoaded)" @onclick="SaveAsync">Save</button>
+            @if (!_settingsLoaded)
+            {
+                <button class="btn btn-secondary" @onclick="LoadAsync">Retry</button>
+            }
+        </div>
+    </section>
+
+    <section class="panel">
+        <h2>Configuration table changes</h2>
+        @if (_schemaError is not null)
+        {
+            <p class="notice">@_schemaError</p>
+        }
+        else if (_tableChanges.Count == 0)
+        {
+
+            <p>Configuration tables are up to date.</p>
+        }
+        else
+        {
+            <table class="table">
+                <thead><tr><th>Table</th><th>Changes</th></tr></thead>
+                <tbody>
+                    @foreach (var table in _tableChanges)
+                    {
+                        <tr><td>@table.TableName</td><td>@string.Join("; ", table.Changes)</td></tr>
+                    }
+                </tbody>
+            </table>
+            <a class="btn btn-primary" href="update">Update configuration tables</a>
+        }
+    </section>
+
+
+</GXLiveView>
+@code {
+    private List<GXDatabase> _catalog = [];
+    private string? _catalogError;
+    private bool _manualConnection;
+    private Guid? _selectedDatabaseId;
+    private bool IsSelected(GXDatabase database) => !_manualConnection && database.Id == _selectedDatabaseId && database.Type == _type && database.ConnectionString == _connectionString;
+    private void ChangeDatabase(ChangeEventArgs args)
+    {
+        var database = Guid.TryParse(args.Value?.ToString(), out var id) ? _catalog.FirstOrDefault(d => d.Id == id) : null;
+        if (database is not null) SelectDatabase(database);
+        else { _manualConnection = true; _selectedDatabaseId = null; }
+    }
+    private void SelectDatabase(GXDatabase database)
+    {
+        _manualConnection = false;
+        _selectedDatabaseId = database.Id;
+        _type = database.Type.Value;
+        _connectionString = database.ConnectionString;
+    }
+    private List<GXConfigurationTableChange> _tableChanges = [];
+    private string? _schemaError;
+    private readonly DatabaseType[] _databaseTypes = Enum.GetValues<DatabaseType>();
+    private bool _saving;
+    private bool _settingsLoaded;
+    private bool _includeStackTrace, _loadedIncludeStackTrace;
+    private bool _notifyLogChanges, _loadedNotifyLogChanges;
+    private LogLevel _eventLogLevel = LogLevel.Information, _loadedEventLogLevel = LogLevel.Information;
+    private LogLevel _communicationLogLevel = LogLevel.Information, _loadedCommunicationLogLevel = LogLevel.Information;
+    private DatabaseType _type = DatabaseType.SqLite;
+    private string _connectionString = string.Empty;
+    private string? _message; private DatabaseType _loadedType; private string _loadedConnection = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _settingsLoaded = false;
+        try
+        {
+            GXStoreSettings settings = await Api.GetStoreSettingsAsync(CancellationToken.None);
+            _includeStackTrace = _loadedIncludeStackTrace = settings.IncludeStackTrace;
+            _notifyLogChanges = _loadedNotifyLogChanges = settings.NotifyLogChanges;
+            _eventLogLevel = _loadedEventLogLevel = settings.EventLogLevel ?? LogLevel.Information;
+            _communicationLogLevel = _loadedCommunicationLogLevel = settings.CommunicationLogLevel ?? LogLevel.Information;
+            _type = settings.Type;
+            _connectionString = settings.ConnectionString; _loadedType = _type; _loadedConnection = _connectionString;
+            _message = "Configuration store settings loaded.";
+            _settingsLoaded = true;
+            _manualConnection = false;
+        }
+        catch (Exception ex)
+        {
+            _message = $"Could not load settings: {ex.Message}";
+            return;
+        }
+        try
+        {
+            _catalog = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
+            _selectedDatabaseId = _catalog.FirstOrDefault(d => d.Type == _type && d.ConnectionString == _connectionString)?.Id;
+            _catalogError = null;
+        }
+        catch (Exception ex) { _catalogError = $"Could not load the database catalog: {ex.Message}"; }
+        try
+        {
+            _tableChanges = await Api.GetConfigurationTableChangesAsync(CancellationToken.None);
+            _schemaError = null;
+        }
+        catch (Exception ex) { _schemaError = ex.Message; }
+    }
+
+    private async Task TestAsync()
+    {
+        if (!_settingsLoaded) return;
+        try
+        {
+            GXStoreSettings payload = BuildSettings();
+            await Api.TestStoreSettingsAsync(payload, CancellationToken.None);
+            _message = "Configuration store connection successful.";
+        }
+        catch (Exception ex)
+        {
+            _message = ex.Message;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving || !_settingsLoaded) return;
+        _saving = true;
+        try
+        {
+            GXStoreSettings payload = BuildSettings();
+            await Api.SaveStoreSettingsAsync(payload, CancellationToken.None);
+            _loadedIncludeStackTrace = payload.IncludeStackTrace;
+            _loadedNotifyLogChanges = payload.NotifyLogChanges;
+            _loadedEventLogLevel = _eventLogLevel;
+            _loadedCommunicationLogLevel = _communicationLogLevel;
+            _loadedType = payload.Type;
+            _loadedConnection = payload.ConnectionString;
+            _message = "Configuration store settings saved.";
+        }
+        catch (Exception ex)
+        {
+            _message = ex.Message;
+        }
+        finally { _saving = false; }
+    }
+
+    private GXStoreSettings BuildSettings()
+    {
+        return new GXStoreSettings
+        {
+            IncludeStackTrace = _includeStackTrace,
+            NotifyLogChanges = _notifyLogChanges,
+            EventLogLevel = _eventLogLevel,
+            CommunicationLogLevel = _communicationLogLevel,
+            Type = _type,
+            ConnectionString = _connectionString,
+        };
+    }
+}
+
+

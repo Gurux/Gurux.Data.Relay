@@ -1,0 +1,96 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/update"
+@inject GXAdminApiClient Api
+
+<PageTitle>Update Configuration Tables</PageTitle>
+<HelpContext Topic="update-configuration-tables" />
+<h1>Update Configuration Tables</h1>
+@if (_changes.Count != 0)
+{
+    <p>Update the following configuration tables to the current schema.</p>
+    <ul>
+        @foreach (var table in _changes)
+        {
+            <li>@table.TableName: @string.Join("; ", table.Changes)</li>
+        }
+    </ul>
+    <button class="btn btn-primary" disabled="@_busy" @onclick="UpdateAsync">
+        @(_busy ? "Updating…" : "Update tables")
+    </button>
+}
+else if (_message is null)
+{
+
+    <p>Configuration tables are up to date.</p>
+}
+@if (_message is not null)
+{
+    <div class="alert @(_failed ? "alert-danger" : "alert-success") mt-3" role="alert">@_message</div>
+}
+
+@code {
+    private List<GXConfigurationTableChange> _changes = [];
+    protected override async Task OnInitializedAsync()
+    {
+        try { _changes = await Api.GetConfigurationTableChangesAsync(CancellationToken.None); }
+        catch (Exception ex) { _failed = true; _message = ex.Message; }
+    }
+    private bool _busy;
+    private bool _failed;
+    private string? _message;
+
+    private async Task UpdateAsync()
+    {
+        if (_busy) 
+        {
+            return;
+        }
+        _busy = true;
+        _message = null;
+        _failed = false;
+        try
+        {
+            await Api.UpdateConfigurationTableAsync(CancellationToken.None);
+            _changes = await Api.GetConfigurationTableChangesAsync(CancellationToken.None);
+            _message = _changes.Count == 0 ? "Configuration tables updated successfully." : "Some tables still require an update.";
+        }
+        catch (Exception ex)
+        {
+            _failed = true;
+            _message = ex.Message;
+        }
+        finally { _busy = false; }
+    }
+}

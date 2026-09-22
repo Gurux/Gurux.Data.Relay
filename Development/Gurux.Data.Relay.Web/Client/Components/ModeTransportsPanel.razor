@@ -1,0 +1,407 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Shared.Enums
+@using Gurux.Data.Relay.Web.Client.Enums
+
+@inject GXAdminApiClient Api
+
+<GXLiveView Mode="@Mode" IsEditing="@(() => _session != null)" OnChanged="LoadAsync">
+
+    @if (_session != null)
+    {
+        <ClientTransportEditor @key="_session" Session="_session" UseTopMenu="true" Action="_action" IsServer="IsServer" OnSettingsSaved="SaveAsync" OnCancel="Cancel">
+            <h3>@(IsServer ? "Table mappings" : "Source tables")</h3>
+            @if (IsServer)
+            {
+                <ServerTableMappings Settings="_databaseOptions" Routes="_session.Draft.Tables" OnChanged="NotifyMappingsChanged" />
+            }
+            else
+            {
+                <label>Database</label>
+                <InputSelect class="form-select" @bind-Value="_selectedDatabaseId">
+                    <option value="@Guid.Empty">Select database</option>
+                    @foreach (var item in _databaseOptions.Databases)
+                    {
+                        <option value="@item.Id">@DatabaseLabel(item)</option>
+                    }
+                </InputSelect>
+                <p>Select source tables. Selections from other databases are retained when changing the database.</p>
+                @foreach (GXDatabase database in _databaseOptions.Databases.Where(d => d.Id == _selectedDatabaseId))
+                {
+                    <h4>@DatabaseLabel(database)</h4>
+                    @foreach (string table in GetSourceTables(database))
+                    {
+                        <label class="d-block"><input type="checkbox" checked="@IsSelected(database.Id, table)" @onchange="e => SelectTable(database.Id, table, e.Value)" /> @table</label>
+                    }
+                }
+            }
+            @if (!string.IsNullOrEmpty(_message))
+            {
+                <p class="notice" role="alert">@_message</p>
+            }
+        </ClientTransportEditor>
+    }
+    else
+    {
+        <section class="panel">
+            <h2>@(IsServer ? "Server Transports" : "Client Transports")</h2>
+            @if (!IsServer)
+            {
+                <label for="@($"{_gxTableIdPrefix}-database")">Database</label>
+                <select id="@($"{_gxTableIdPrefix}-database")" class="form-select mb-3"
+                        @bind="_filterDatabaseId" @bind:after="RefreshFilteredTransportsAsync">
+                    <option value="@Guid.Empty">All databases</option>
+                    @foreach (var database in _catalogDatabases)
+                    {
+                        <option value="@database.Id">@DatabaseLabel(database)</option>
+                    }
+                </select>
+            }
+            @if (!string.IsNullOrEmpty(_message))
+            {
+                <p class="notice" role="alert">@_message</p>
+            }
+            @if (IsServer)
+            {
+                <div class="actions-row">
+                    <button class="btn btn-success" @onclick="() => OpenAsync(null, CrudAction.Create)">Add transport</button>
+                </div>
+            }
+            <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXTransport"
+                     Context="transport"
+                     @ref="_transportTable"
+                     @key="_settings"
+                     @bind-Active="_activeTransport"
+                     ShowAllData="true"
+                     ShowAllUsers="false"
+                     ShowRemoved="false"
+                     ItemsProvider="GetTransportItems" OnSearch="LoadAsync">
+                <FilterContent>
+                    <Fh Id="transports-type">
+                        <Dropdown TValue="TransportType?" class="form-select"
+                                  @bind-Value="_filterType" @bind-Value:after="RefreshFilteredTransportsAsync"
+                                  Items="@(Enum.GetValues<TransportType>().Select(type => (TransportType?)type).Prepend(null))" />
+                    </Fh>
+                    <Fh id="transports-description">
+                        <Search class="form-control"
+                                placeholder="Filter by transport description..."
+                                id="transports-description-search"
+                                Immediate="true"
+                                LastValue="true"
+                                @bind-Value="@_filter.Description"
+                                OnValueChanged="RefreshFilteredTransportsAsync" />
+                    </Fh>
+                    <Fh />
+                </FilterContent>
+                <HeaderContent>
+                    <th>Type</th>
+                    <th>Description</th>
+                    <th>Tables</th>
+                </HeaderContent>
+                <ItemContent>
+                    <td><button class="btn btn-link" @onclick="() => OpenSelectedAsync(CrudAction.Update)">@transport.Type</button></td>
+                    <td>@transport.Description</td>
+                    <td>@transport.Tables.Count</td>
+                </ItemContent>
+                <MenuContent>
+                    <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => OpenSelectedAsync(CrudAction.Update)" />
+                    <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="() => OpenSelectedAsync(CrudAction.Delete)" />
+                    @if (!IsServer)
+                    {
+                        <ContextMenuItem Text="Test server connection" Image="oi oi-pulse" OnClick="TestServerConnectionAsync" />
+                        <ContextMenuItem Text="Send now" Image="oi oi-data-transfer-upload" OnClick="RunAsync" />
+                    }
+                </MenuContent>
+            </GXTable>
+        </section>
+    }
+
+
+</GXLiveView>
+@code {
+    private readonly string _gxTableIdPrefix = "modetransportspanel-" + Guid.NewGuid().ToString("N");
+    [Inject]
+    public IGXTopMenu TopMenu { get; set; } = default!;
+
+    private GXTransport _filter = new();
+    private TransportType? _filterType;
+    private Guid _filterDatabaseId;
+    private List<GXDatabase> _catalogDatabases = [];
+    private GXTable<GXTransport>? _transportTable;
+
+    private async Task RefreshFilteredTransportsAsync()
+    {
+        _activeTransport = null;
+        if (_transportTable != null)
+            await _transportTable.RefreshDataAsync(true);
+    }
+
+    private bool _listMenuPending = true;
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!IsServer && _session == null && _listMenuPending)
+        {
+            _listMenuPending = false;
+            TopMenu.Clear();
+            TopMenu.EditContext = null;
+            TopMenu.AddMenuItems([
+                new GXMenuItem("Add transport", "Add",
+                    EventCallback.Factory.Create(this, () => OpenAsync(null, CrudAction.Create)))
+            ]);
+        }
+    }
+
+
+    [Parameter, EditorRequired] public string Mode { get; set; } = "client";
+    private bool IsServer => Mode == "server";
+    private GXSettings _settings = new();
+    private GXTransportEditSession? _session;
+    private GXTransport? _activeTransport;
+    private bool _running;
+    private bool _testingConnection;
+
+    private async Task TestServerConnectionAsync()
+    {
+        if (IsServer || _testingConnection || _activeTransport is null) return;
+        var transport = _activeTransport;
+        _testingConnection = true;
+        _message = $"Testing server connection for {transport.Description ?? transport.Type.ToString()}...";
+        try
+        {
+            await Api.TestClientTransportConnectionAsync(transport.Id, CancellationToken.None);
+            _message = $"Server connection successful for {transport.Description ?? transport.Type.ToString()}.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Server connection test failed: {ex.Message}";
+        }
+        finally
+        {
+            _testingConnection = false;
+        }
+    }
+    private async Task RunAsync()
+    {
+        if (IsServer || _running || _activeTransport is null)
+        {
+            return;
+        }
+        var transport = _activeTransport;
+        _running = true;
+        _message = $"Sending data via {transport.Description ?? transport.Type.ToString()}...";
+        try
+        {
+            await Api.RunClientTransportAsync(transport.Id, CancellationToken.None);
+            _message = $"Send completed for {transport.Description ?? transport.Type.ToString()}.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"Could not send data: {ex.Message}";
+        }
+        finally { _running = false; }
+    }
+
+    private ValueTask<ItemsProviderResult<GXTransport>> GetTransportItems(GXItemsProviderRequest request)
+    {
+        string? description = _filter.Description?.Trim();
+        var transports = _settings.Transports.Where(transport =>
+            (IsServer || _filterDatabaseId == Guid.Empty || transport.Tables.Any(route => route.DatabaseId == _filterDatabaseId) || transport.Database == _filterDatabaseId) &&
+            (!_filterType.HasValue || transport.Type == _filterType.Value) &&
+            (string.IsNullOrEmpty(description) ||
+             transport.Description?.Contains(description, StringComparison.OrdinalIgnoreCase) == true)).ToList();
+        return ValueTask.FromResult(new ItemsProviderResult<GXTransport>(transports, transports.Count));
+    }
+    private Task OpenSelectedAsync(CrudAction action) => _activeTransport is not null && _settings.Transports.Contains(_activeTransport)
+        ? OpenAsync(_activeTransport, action) : Task.CompletedTask;
+    private CrudAction _action;
+    private string? _message;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private string DatabaseLabel(GXDatabase database) => string.IsNullOrWhiteSpace(database.Description) ? database.Type.ToString() : database.Description;
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+            if (!IsServer)
+            {
+                _catalogDatabases = (await Api.GetDatabaseCatalogAsync(CancellationToken.None)).ToList();
+                if (!_catalogDatabases.Any(database => database.Id == _filterDatabaseId))
+                    _filterDatabaseId = Guid.Empty;
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = ex.Message;
+        }
+    }
+    private GXSettings _databaseOptions = new();
+    private Guid _selectedDatabaseId;
+    private readonly Dictionary<Guid, IReadOnlyList<string>> _sourceTables = [];
+
+    private IEnumerable<string> GetSourceTables(GXDatabase database) =>
+        (database.Tables?.Select(table => table.Name) ?? [])
+            .Concat(_sourceTables.GetValueOrDefault(database.Id) ?? [])
+            .Concat(_session?.Draft.Tables.Where(route => route.DatabaseId == database.Id).Select(route => route.Table) ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
+
+    private async Task OpenAsync(GXTransport? transport, CrudAction action)
+    {
+        _message = null;
+        try
+        {
+            var catalog = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
+            _databaseOptions = new GXSettings
+            {
+                Databases = catalog.Select(database => _settings.Databases.FirstOrDefault(d => d.Id == database.Id) ?? database).ToList()
+            };
+        }
+        catch (Exception ex) { _message = ex.Message; return; }
+        _selectedDatabaseId = transport?.Tables.FirstOrDefault()?.DatabaseId ?? _databaseOptions.Databases.FirstOrDefault()?.Id ?? Guid.Empty;
+        _session = new GXTransportEditSession(_settings, transport == null ? null : _settings.Transports.IndexOf(transport));
+        _action = action;
+        _sourceTables.Clear();
+        if (IsServer || action == CrudAction.Delete) return;
+        var session = _session;
+        foreach (GXDatabase database in _databaseOptions.Databases)
+        {
+            try
+            {
+                var tables = await Api.GetTablesAsync(database, CancellationToken.None);
+                if (!ReferenceEquals(_session, session)) return;
+                _sourceTables[database.Id] = tables;
+            }
+            catch (Exception ex)
+            {
+                if (!ReferenceEquals(_session, session)) return;
+                _message += $"Could not load source tables for {DatabaseLabel(database)}: {ex.Message} ";
+            }
+        }
+    }
+    private bool IsSelected(Guid id, string name) => _session!.Draft.Tables.Any(t => t.DatabaseId == id && string.Equals(t.Table, name, StringComparison.OrdinalIgnoreCase));
+    private void SelectTable(Guid id, string name, object? value)
+    {
+        _session!.Draft.Tables.RemoveAll(t => t.DatabaseId == id && string.Equals(t.Table, name, StringComparison.OrdinalIgnoreCase));
+        if (value is true) _session.Draft.Tables.Add(new() { DatabaseId = id, Table = name });
+        if (!IsServer && TopMenu?.EditContext is { } context)
+            context.NotifyFieldChanged(new FieldIdentifier(_session.Draft, nameof(GXTransport.Tables)));
+    }
+
+    private async Task SaveAsync(GXSettings settings)
+    {
+        if (_action != CrudAction.Delete)
+        {
+            GXTransport transport = settings.Transports.Single(t => t.Id == _session!.Draft.Id);
+            if (!IsServer && transport.Tables.Count == 0)
+                throw new InvalidOperationException("Select at least one table.");
+            if (transport.Tables.Any(t => t.DatabaseId == Guid.Empty || string.IsNullOrWhiteSpace(t.Table) || (IsServer && string.IsNullOrWhiteSpace(t.Source))))
+                throw new InvalidOperationException("Complete every table mapping before saving.");
+            if (transport.Tables.Any(t => !_databaseOptions.Databases.Any(d => d.Id == t.DatabaseId)))
+                throw new InvalidOperationException("A selected database no longer exists. Select an available database.");
+            if (IsServer && transport.Tables.GroupBy(t => t.Source, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
+                throw new InvalidOperationException("Each incoming table name can have only one destination per transport.");
+            foreach (var id in transport.Tables.Select(route => route.DatabaseId).Distinct())
+            {
+                if (!settings.Databases.Any(database => database.Id == id))
+                {
+                    var database = _databaseOptions.Databases.Single(database => database.Id == id);
+                    settings.Databases.Add(System.Text.Json.JsonSerializer.Deserialize<GXDatabase>(
+                        System.Text.Json.JsonSerializer.Serialize(database))!);
+                }
+            }
+            if (!IsServer)
+            {
+                foreach (GXTransportTable route in transport.Tables)
+                {
+                    GXDatabase database = settings.Databases.Single(d => d.Id == route.DatabaseId);
+                    database.Tables ??= [];
+                    if (database.Tables.Any(table => string.Equals(table.Name, route.Table, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    var schema = await Api.GetColumnsAsync(database, route.Table, CancellationToken.None);
+                    if (schema.Columns.Count == 0)
+                        throw new InvalidOperationException($"Could not read columns for source table '{route.Table}'.");
+                    database.Tables.Add(new GXTable
+                    {
+                        Name = route.Table,
+                        Columns = schema.Columns.Select(column => column.Name).ToList(),
+                        Keys = schema.Columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToList()
+                    });
+                }
+            }
+        }
+        // The server can assign an ID to a new transport when saving.
+        int transportIndex = _action == CrudAction.Delete ? -1
+            : settings.Transports.FindIndex(t => t.Id == _session!.Draft.Id);
+        try
+        {
+            await Api.SaveSettingsAsync(Mode, settings, CancellationToken.None);
+        }
+        catch (GXSettingsActivationException ex)
+        {
+            _settings = settings;
+            if (_action == CrudAction.Delete)
+            {
+                Cancel();
+            }
+            else
+            {
+                _session = new GXTransportEditSession(settings, transportIndex);
+                _action = CrudAction.Update;
+            }
+            _message = ex.Message;
+            return;
+        }
+        _settings = settings;
+        Cancel();
+        _message = "Transport settings saved.";
+    }
+
+    private void NotifyMappingsChanged()
+    {
+        TopMenu?.EditContext?.NotifyFieldChanged(new FieldIdentifier(_session!.Draft, nameof(GXTransport.Tables)));
+    }
+
+    private void Cancel()
+    {
+        TopMenu.Clear();
+        TopMenu.EditContext = null;
+        _listMenuPending = true;
+        _session = null;
+        _action = CrudAction.None;
+        _message = null;
+    }
+}
+
+

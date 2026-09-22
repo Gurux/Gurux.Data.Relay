@@ -1,0 +1,281 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@using Gurux.Data.Relay.Shared
+@using Gurux.Data.Relay.Shared.Enums
+@using Gurux.Data.Relay.Web.Client.Enums
+
+<PageTitle>@Title</PageTitle>
+<section class="panel">
+    <h2>@Title</h2>
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <p class="notice" role="alert">@_message</p>
+    }
+    @if (Session != null)
+    {
+        @if (!string.IsNullOrEmpty(Session.TableName))
+        {
+            <p><strong>Table:</strong> @Session.TableName</p>
+        }
+        @if (IsDelete)
+        {
+            <p><strong>Type:</strong> @Session.Draft.Type</p>
+            <p><strong>Description:</strong> @(Session.Draft.Description ?? "(empty)")</p>
+            @if (!UseTopMenu)
+            {
+                <button class="btn btn-danger" disabled="@_saving" @onclick="DeleteAsync">Delete transport</button>
+            }
+        }
+        else
+        {
+            <EditForm EditContext="_editContext">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+                <fieldset disabled="@_saving">
+                    <TabControl>
+                        <TabPage Text="Connection">
+                            <HelpContext Topic="transport-connection" />
+                            <div class="mb-2">
+                                <label>Description</label>
+                                <InputText class="form-control" @bind-Value="Session.Draft.Description" />
+                                <ValidationMessage For="@(() => Session.Draft.Description)" />
+                            </div>
+                            <div class="mb-2">
+                                <label>Type</label>
+                                <GXInputDropdown class="form-select"
+                                                 @bind-Value="Session.Draft.Type">
+                                </GXInputDropdown>
+                                <ValidationMessage For="@(() => Session.Draft.Type)" />
+                            </div>
+                            @if (Session.Draft.Type == TransportType.Tcp)
+                            {
+                                <div class="mb-2">
+                                    <label>Port</label><InputNumber class="form-control" @bind-Value="Session.Draft.Port" />
+                                    <ValidationMessage For="@(() => Session.Draft.Port)" />
+                                </div>
+                                @if (!IsServer)
+                                {
+                                    <div class="mb-2">
+                                        <label>Host</label>
+                                        <InputText class="form-control" @bind-Value="Session.Draft.Host" />
+                                        <ValidationMessage For="@(() => Session.Draft.Host)" />
+                                    </div>
+                                    <div class="mb-2">
+                                        <label>Connect timeout</label>
+                                        <InputIntegerTimeSpan class="form-control" @bind-Value="Session.Draft.ConnectTimeoutSeconds"></InputIntegerTimeSpan>
+                                        <ValidationMessage For="@(() => Session.Draft.ConnectTimeoutSeconds)" />
+                                    </div>
+                                    <div class="mb-2">
+                                        <label>Acknowledgement timeout</label>
+                                        <InputIntegerTimeSpan class="form-control" @bind-Value="Session.Draft.AcknowledgementTimeoutSeconds"></InputIntegerTimeSpan>
+                                        <ValidationMessage For="@(() => Session.Draft.AcknowledgementTimeoutSeconds)" />
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div class="mb-2">
+                                    <label>Broker</label><InputText class="form-control" @bind-Value="Session.Draft.Broker" />
+                                    <ValidationMessage For="@(() => Session.Draft.Broker)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Topic</label><InputText class="form-control" @bind-Value="Session.Draft.Topic" />
+                                    <ValidationMessage For="@(() => Session.Draft.Topic)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Acknowledgement topic</label><InputText class="form-control" @bind-Value="Session.Draft.AcknowledgementTopic" />
+                                    <ValidationMessage For="@(() => Session.Draft.AcknowledgementTopic)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Username</label><InputText class="form-control" @bind-Value="Session.Draft.Username" />
+                                    <ValidationMessage For="@(() => Session.Draft.Username)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Password @(Session.IsNew ? "" : "(leave empty to keep existing)")</label><InputText type="password" class="form-control" @bind-Value="Session.Password" />
+                                    <ValidationMessage For="@(() => Session.Password)" />
+                                </div>
+                                <div class="mb-2 form-check"><Gurux.UI.Components.InputCheckbox class="form-check-input" @bind-Value="Session.Draft.UseTls" /><label class="form-check-label">Use TLS</label></div>
+                                <div class="mb-2">
+                                    <label>Port</label><InputNumber class="form-control" @bind-Value="Session.Draft.Port" />
+                                    <ValidationMessage For="@(() => Session.Draft.Port)" />
+                                </div>
+                            }
+                            <div class="mb-2">
+                                <label>Maximum message size</label><InputNumber class="form-control" @bind-Value="Session.Draft.MaximumMessageSize" />
+                                <ValidationMessage For="@(() => Session.Draft.MaximumMessageSize)" />
+                            </div>
+                        </TabPage>
+                        @if (!IsServer)
+                        {
+                            <TabPage Text="Transfer">
+                                <HelpContext Topic="transfer-and-tables" />
+                                <div class="mb-2">
+                                    <label>Batch size</label><InputNumber class="form-control" @bind-Value="Session.Draft.Transfer!.BatchSize" />
+                                    <ValidationMessage For="@(() => Session.Draft.Transfer!.BatchSize)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Retry count</label><InputNumber class="form-control" @bind-Value="Session.Draft.Transfer!.RetryCount" />
+                                    <ValidationMessage For="@(() => Session.Draft.Transfer!.RetryCount)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Retry delay</label>
+                                    <InputIntegerTimeSpan class="form-control" @bind-Value="Session.Draft.Transfer!.RetryDelaySeconds" />
+                                    <ValidationMessage For="@(() => Session.Draft.Transfer!.RetryDelaySeconds)" />
+                                </div>
+                                <div class="mb-2">
+                                    <label>Ping after</label>
+                                    <InputIntegerTimeSpan class="form-control" @bind-Value="Session.Draft.Transfer!.PingAfterSeconds" />
+                                    <ValidationMessage For="@(() => Session.Draft.Transfer!.PingAfterSeconds)" />
+                                </div>
+                                <div class="mb-2 form-check"><Gurux.UI.Components.InputCheckbox class="form-check-input" @bind-Value="Session.Draft.Transfer!.AllowConcurrentRuns" /><label class="form-check-label">Allow concurrent runs</label></div>
+                            </TabPage>
+                        }
+                        @if (ChildContent is not null)
+                        {
+                            <TabPage Text="@(IsServer ? "Table mappings" : "Tables")">
+                                @if (IsServer)
+                                {
+                                    <HelpContext Topic="transports--receiving-and-table-mappings" />
+                                }
+                                else
+                                {
+                                    <HelpContext Topic="transfer-and-tables" />
+                                }
+                                @ChildContent
+                            </TabPage>
+                        }
+                    </TabControl>
+                    @if (!UseTopMenu)
+                    {
+                        <button type="button" class="btn btn-success mt-3" @onclick="SaveAsync">Save transport</button>
+                    }
+                </fieldset>
+            </EditForm>
+        }
+    }
+    @if (!UseTopMenu)
+    {
+        <button class="btn btn-secondary mt-2" disabled="@_saving" @onclick="CancelAsync">Cancel</button>
+    }
+</section>
+
+@code {
+    [Parameter] public bool UseTopMenu { get; set; }
+
+    [Inject]
+    public IGXTopMenu TopMenu { get; set; } = default!;
+
+    private GXTransportEditSession? _editSession;
+    private EditContext _editContext = default!;
+    private bool _menuPending;
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_editSession, Session))
+        {
+            _editSession = Session;
+            _editContext = new EditContext(Session.Draft);
+            _menuPending = true;
+        }
+        if (UseTopMenu)
+        {
+            TopMenu.EditContext = _editContext;
+        }
+    }
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (UseTopMenu && _menuPending)
+        {
+            _menuPending = false;
+            TopMenu.Clear();
+            TopMenu.EditContext = _editContext;
+            _editContext.MarkAsUnmodified();
+            TopMenu.AddMenuItems([
+                new GXMenuItem(IsDelete ? "Delete" : "Save", IsDelete ? "Delete" : "Save",
+                EventCallback.Factory.Create(this, IsDelete ? DeleteAsync : SaveAsync) , IsDelete ? UI.Components.Enums.EnableStyle.Always : UI.Components.Enums.EnableStyle.Modified),
+                new GXMenuItem("Cancel", "Cancel", EventCallback.Factory.Create(this, CancelAsync))
+            ]);
+        }
+    }
+
+    [Parameter, EditorRequired] public GXTransportEditSession Session { get; set; } = default!;
+    [Parameter, EditorRequired] public CrudAction Action { get; set; }
+    [Parameter] public EventCallback<GXTable> OnSaved { get; set; }
+    [Parameter] public EventCallback<GXSettings> OnSettingsSaved { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public bool IsServer { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private bool _saving;
+    private string? _message;
+    private bool IsDelete => Action == CrudAction.Delete;
+    private string Title => IsDelete ? "Delete transport" : Action == CrudAction.Create ? "Add transport" : "Edit transport";
+
+    private Task SaveAsync() => PersistAsync(false);
+    private Task DeleteAsync() => PersistAsync(true);
+    private Task CancelAsync() => _saving ? Task.CompletedTask : OnCancel.InvokeAsync();
+
+    private async Task PersistAsync(bool delete)
+    {
+        if (_saving || (!delete && !_editContext.Validate()))
+        {
+            return;
+        }
+        _saving = true;
+        _message = null;
+        try
+        {
+            if (OnSettingsSaved.HasDelegate)
+            {
+                await OnSettingsSaved.InvokeAsync(Session.CreateSaveSettings(delete));
+            }
+            else
+            {
+                await OnSaved.InvokeAsync(delete ? Session.CreateDeleteTable() : Session.CreateSaveTable());
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}
+
+
+
+
+

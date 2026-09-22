@@ -1,0 +1,85 @@
+@*
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+//
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2.
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+*@
+
+@page "/datavault"
+@page "/datavault/model"
+@page "/datavault/state"
+@page "/datavault/log"
+@page "/datavault/overview"
+
+@using Gurux.UI.Components.Tab
+@inject NavigationManager Navigation
+
+<TabControl Active="@(Path?.StartsWith('/') == true ? Path : $"/datavault/{Path}")" SelectionChanged="@SelectionChanged">
+    <TabTextTemplate>
+        <Image Value="@context.Icon" />
+        <LocalizedText Value="@context.Text" />
+    </TabTextTemplate>
+    <ChildContent>
+        <TabPage Path="/datavault/model" Text="Model" Icon="oi oi-list-rich">
+            <HelpContext Topic="model--data-warehouse-model" />
+            <DataVaultMappingsPanel />
+        </TabPage>
+        <TabPage Path="/datavault/state" Text="State" Icon="oi oi-dashboard">
+            <HelpContext Topic="state--processing-state" />
+            <ModeStatePanel Mode="datavault" Title="Data Vault Runtime State" />
+        </TabPage>
+        <TabPage Path="/datavault/log" Text="Log" Icon="oi oi-spreadsheet">
+            <HelpContext Topic="log--data-vault-log" />
+            <ModeEventsPanel Mode="datavault" Title="Data Vault Log" />
+        </TabPage>
+        <TabPage Path="/datavault/overview" Text="Settings" Icon="oi oi-cog">
+            <HelpContext Topic="settings--data-vault-settings" />
+            <ModeSettingsPanel Mode="datavault" Title="Data Vault Settings" />
+        </TabPage>
+    </ChildContent>
+</TabControl>
+
+@code {
+
+    private string? Path { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        Path = new Uri(Navigation.Uri).AbsolutePath;
+    }
+
+    /// <summary>
+    /// User has selected a new tab.
+    /// </summary>
+    /// <param name="page">Tab page.</param>
+    void SelectionChanged(TabPage page)
+    {
+        Path = page.Path;
+    }
+}
