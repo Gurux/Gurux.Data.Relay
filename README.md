@@ -1,4 +1,4 @@
-![Gurux Data Relay](/images/data-relay.png)
+![Gurux Data Relay](Development/images/data-relay.png)
 See An [Gurux](https://www.gurux.fi/ "Gurux") for an overview.
 
 Join the Gurux Community or follow [@Gurux](https://twitter.com/guruxorg "@Gurux") for project updates.\
