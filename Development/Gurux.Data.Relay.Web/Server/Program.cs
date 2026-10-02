@@ -41,6 +41,7 @@ using Gurux.Data.Relay.Transport;
 using Gurux.Data.Relay.Shared.Client;
 using Gurux.Data.Relay.Realtime;
 using Gurux.Data.Relay.Hosting;
+using Gurux.Data.Relay.Web.Server.Mcp;
 
 public partial class Program
 {
@@ -57,11 +58,26 @@ public partial class Program
         builder.Services.AddRazorPages();
         builder.Services.AddRelayOpenApi();
         builder.Services.AddRelayRestAccess();
+        builder.Services.AddSingleton<GXDataVaultDiscoveryService>();
+        builder.Services.AddSingleton<IGXDataVaultWriteStore, GXDataVaultWriteStore>();
+        builder.Services.AddSingleton<GXDataVaultWriteService>();
+        builder.Services.AddSingleton<GXTableDataReader>();
+        builder.Services.AddMcpServer().WithHttpTransport().WithTools<GXDataVaultMcpTools>();
         builder.Services.AddSignalR();
         builder.Services.AddSingleton<GXRelayChangeFeed>();
         builder.Services.AddSingleton<IGXRelayChangePublisher>(sp => sp.GetRequiredService<GXRelayChangeFeed>());
         builder.Services.AddSingleton<GXEditRegistry>();
         builder.Services.AddHostedService<GXRelayNotificationService>();
+        builder.Services.AddHttpClient(GXSoftwareUpdateService.HttpClientName, client =>
+        {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Gurux.Data.Relay");
+            client.Timeout = TimeSpan.FromSeconds(30);
+        }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+        });
+        builder.Services.AddSingleton<GXSoftwareUpdateService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<GXSoftwareUpdateService>());
 
         // ASP.NET arguments belong to the web host; all configured relay modes run alongside it.
         string? settingsFilePath = builder.Configuration["settings-file"];
@@ -137,7 +153,14 @@ public partial class Program
             // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
             app.UseHsts();
         }
-        app.UseHttpsRedirection();
+        if (app.Environment.IsDevelopment())
+        {
+            app.UseWhen(context => !context.Request.Path.StartsWithSegments("/mcp"), branch => branch.UseHttpsRedirection());
+        }
+        else
+        {
+            app.UseHttpsRedirection();
+        }
 
         app.UseBlazorFrameworkFiles();
         app.UseStaticFiles();
@@ -146,6 +169,7 @@ public partial class Program
         app.UseRouting();
         app.UseMiddleware<GXDatabaseConnectionExceptionMiddleware>();
         app.UseRelayRestAccess();
+        app.MapMcp("/mcp");
         app.MapRelayOpenApi();
 
         app.MapRazorPages();

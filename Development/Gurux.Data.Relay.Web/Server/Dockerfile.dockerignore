@@ -17,3 +17,5 @@
 **/*.pem
 **/gurux.data.relay.json
 **/appsettings.Development.json
+Gurux.Data.Relay.db
+gurux.data.relay.settings.json

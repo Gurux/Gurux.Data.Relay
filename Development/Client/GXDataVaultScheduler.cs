@@ -1,3 +1,36 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using E = System.Linq.Expressions.Expression;
 using Gurux.Service.Orm.Common.Model;
 using System.Data.Common;
 using System.Globalization;
@@ -387,17 +420,8 @@ public sealed class GXDataVaultScheduler
             return rows;
         }
 
-        using var databaseContext = GXEventLogContext.BeginDatabase(
-            _databaseIndexes.TryGetValue(database, out int index) ? index : GXEventLogContext.DatabaseIndex);
-        List<GXDataVaultTableMapping> stagingMappings = ResolveStagingMappings(database, mart);
-        int copiedRows = await RefreshInformationMartAsync(database, stagingMappings, mart, cancellationToken);
+        throw new ArgumentException($"Information Mart '{Target(mart).Name}' has no explicit source mappings. Edit every Mart column and select its source mapping before starting it.");
 
-        _logger.LogInformation(
-            "Data Vault Information Mart {TargetTable} refreshed from {StagingTables}. Copied {RowCount} rows.",
-            Target(mart).Name,
-            string.Join(", ", stagingMappings.Select(mapping => Target(mapping).Name)),
-            copiedRows);
-        return copiedRows;
     }
 
     /// <summary>
@@ -469,7 +493,7 @@ public sealed class GXDataVaultScheduler
                 martSchema,
                 historyEnabled,
                 cancellationToken);
-            int rows = await CountRowsAsync(connection, transaction, martSchema.Name, cancellationToken);
+            int rows = await CountRowsAsync(connection, transaction, martSchema, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return rows;
         }
@@ -483,15 +507,14 @@ public sealed class GXDataVaultScheduler
     private static async Task<int> CountRowsAsync(
         DbConnection connection,
         DbTransaction transaction,
-        string tableName,
+        GXTableSchema table,
         CancellationToken cancellationToken)
     {
         GXDbConnection guruxConnection = new(connection);
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = $"SELECT COUNT(*) FROM {QuoteIdentifier(tableName)}";
-        object? count = await command.ExecuteScalarAsync(cancellationToken);
-        return Convert.ToInt32(count, CultureInfo.InvariantCulture);
+        var query = GXSelectArgs.Select(table.Columns);
+        query.Columns.Clear();
+        query.Columns.Add(GXSqlExpressions.CountExpression());
+        return checked((int)(await guruxConnection.SelectAsync<long>(transaction, query, cancellationToken)).Single());
     }
 
     private static List<GXDataVaultTableMapping> ResolveRawVaultMappings(
@@ -536,7 +559,6 @@ public sealed class GXDataVaultScheduler
         CancellationToken cancellationToken)
     {
         List<(string SourceColumn, string StagingColumn)> sourceColumns = [];
-        var generatedMetadata = new List<GXDataVaultColumnMapping>();
         foreach (GXDataVaultColumnMapping rawVaultColumn in rawVault.Columns)
         {
             if (rawVaultColumn.Role is DataVaultColumnRole.LoadDate or DataVaultColumnRole.RecordSource)
@@ -558,7 +580,6 @@ public sealed class GXDataVaultScheduler
                             sourceColumns.Add((rawVaultColumn.SourceColumn, recordSourceColumn.Name));
                         continue;
                     }
-                    generatedMetadata.Add(rawVaultColumn);
                     continue;
                 }
             }
@@ -574,38 +595,38 @@ public sealed class GXDataVaultScheduler
             return 0;
         }
 
-        StringBuilder sql = new();
-        sql.Append("SELECT DISTINCT ");
-        sql.AppendLine(string.Join(", ", sourceColumns.Select(column => QuoteIdentifier(column.StagingColumn))));
-        sql.Append("FROM ");
-        sql.Append(QuoteIdentifier(stagingSchema.Name));
+        var query = GXSelectArgs.Select(GXSchemaColumns.Columns(stagingSchema,
+            sourceColumns.Select(column => column.StagingColumn)));
+        query.Distinct = true;
         string? loadDateColumn = ResolveOptionalLoadDateColumn(rawVault, staging, stagingSchema);
         if (loadDateColumn is not null)
         {
-            sql.Append(" ORDER BY ");
-            sql.Append(QuoteIdentifier(loadDateColumn));
+            var column = GXSchemaColumns.Columns(stagingSchema, [loadDateColumn])[0];
+            query.OrderBy.Add<GXColumnSchema>(_ => column);
         }
 
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = sql.ToString();
         List<Dictionary<string, object?>> rows = [];
         DateTimeOffset loadDate = DateTimeOffset.Now;
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(transaction, query, cancellationToken);
+        foreach (var selectedRow in selectedRows)
         {
             Dictionary<string, object?> valuesBySourceColumn = new(StringComparer.OrdinalIgnoreCase);
             for (int pos = 0; pos != sourceColumns.Count; ++pos)
             {
-                object value = reader.GetValue(pos);
+                object? value = selectedRow[pos];
                 valuesBySourceColumn[sourceColumns[pos].SourceColumn] = value == DBNull.Value ? null : value;
             }
-            foreach (var metadata in generatedMetadata)
-                valuesBySourceColumn[metadata.SourceColumn] = metadata.Role == DataVaultColumnRole.LoadDate ? loadDate : stagingSchema.ToString();
+            foreach (var metadata in rawVault.Columns.Where(column =>
+                column.Role is DataVaultColumnRole.LoadDate or DataVaultColumnRole.RecordSource))
+            {
+                // A nullable audit column in Staging must not propagate NULL into a required Vault audit column.
+                if (!valuesBySourceColumn.TryGetValue(metadata.SourceColumn, out object? value) || value is null)
+                    valuesBySourceColumn[metadata.SourceColumn] = metadata.Role == DataVaultColumnRole.LoadDate ? loadDate : stagingSchema.ToString();
+            }
             rows.Add(valuesBySourceColumn);
         }
 
-        await reader.CloseAsync();
+
         int insertedRows = 0;
         Dictionary<string, RawVaultRow> latestRowsByKey = new(StringComparer.Ordinal);
         foreach (Dictionary<string, object?> valuesBySourceColumn in rows)
@@ -617,13 +638,13 @@ public sealed class GXDataVaultScheduler
         foreach (RawVaultRow row in latestRowsByKey.Values)
         {
             if (historyEnabled && rawVault.ObjectType == DataVaultObjectType.Hub &&
-                await RawVaultRowExistsAsync(connection, transaction, databaseType, rawVaultSchema.Name, row.KeyColumns, row.KeyValues, cancellationToken))
+                await RawVaultRowExistsAsync(connection, transaction, databaseType, rawVaultSchema, row.KeyColumns, row.KeyValues, cancellationToken))
             {
                 continue;
             }
 
             if (historyEnabled && rawVault.ObjectType == DataVaultObjectType.Link &&
-                await RawVaultRowExistsAsync(connection, transaction, databaseType, rawVaultSchema.Name, row.KeyColumns, row.KeyValues, cancellationToken))
+                await RawVaultRowExistsAsync(connection, transaction, databaseType, rawVaultSchema, row.KeyColumns, row.KeyValues, cancellationToken))
             {
                 continue;
             }
@@ -641,7 +662,7 @@ public sealed class GXDataVaultScheduler
                 connection,
                 transaction,
                 databaseType,
-                rawVaultSchema.Name,
+                rawVaultSchema,
                     row.KeyColumns,
                     row.KeyValues,
                 cancellationToken);
@@ -650,7 +671,7 @@ public sealed class GXDataVaultScheduler
                 connection,
                 transaction,
                 databaseType,
-                rawVaultSchema.Name,
+                rawVaultSchema,
                 row.TargetColumns,
                 row.Values,
                 cancellationToken);
@@ -765,7 +786,7 @@ public sealed class GXDataVaultScheduler
         DbConnection connection,
         DbTransaction transaction,
         DatabaseType databaseType,
-        string tableName,
+        GXTableSchema table,
         IReadOnlyList<string> keyColumns,
         IReadOnlyList<object?> keyValues,
         CancellationToken cancellationToken)
@@ -775,30 +796,14 @@ public sealed class GXDataVaultScheduler
             return;
         }
 
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-
-        List<string> conditions = [];
-        for (int pos = 0; pos != keyColumns.Count; ++pos)
-        {
-            string placeholder = GXSqlParameterHelper.GetPlaceholder(databaseType, $"k{pos}");
-            conditions.Add($"{QuoteIdentifier(keyColumns[pos])} = {placeholder}");
-
-            DbParameter parameter = command.CreateParameter();
-            parameter.ParameterName = GXSqlParameterHelper.GetParameterName(placeholder);
-            parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(databaseType, keyValues[pos]) ?? DBNull.Value;
-            command.Parameters.Add(parameter);
-        }
-
-        command.CommandText = $"DELETE FROM {QuoteIdentifier(tableName)} WHERE {string.Join(" AND ", conditions)}";
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await new GXDbConnection(connection).DeleteAsync(transaction, GXDeleteArgs.Delete(table, KeyPredicate(table, keyColumns, keyValues)), cancellationToken);
     }
 
     private static async Task<bool> RawVaultRowExistsAsync(
         DbConnection connection,
         DbTransaction transaction,
         DatabaseType databaseType,
-        string tableName,
+        GXTableSchema table,
         IReadOnlyList<string> keyColumns,
         IReadOnlyList<object?> keyValues,
         CancellationToken cancellationToken)
@@ -808,15 +813,11 @@ public sealed class GXDataVaultScheduler
             return false;
         }
 
-        await using DbCommand command = CreateKeyLookupCommand(
-            connection,
-            transaction,
-            databaseType,
-            tableName,
-            keyColumns,
-            keyValues,
-            "SELECT COUNT(*)");
-        object? count = await command.ExecuteScalarAsync(cancellationToken);
+        var query = CreateKeyLookupQuery(
+            table,
+            ResolveKeys(table, keyColumns, keyValues),
+            GXSqlExpressions.CountExpression());
+        long count = (await new GXDbConnection(connection).SelectAsync<long>(transaction, query, cancellationToken)).Single();
         return Convert.ToInt32(count, CultureInfo.InvariantCulture) != 0;
     }
 
@@ -836,28 +837,23 @@ public sealed class GXDataVaultScheduler
             rawVaultSchema,
             rawVault.Columns.Single(column => column.Role == DataVaultColumnRole.LoadDate).TargetColumn);
 
-        await using DbCommand command = CreateKeyLookupCommand(
-            connection,
-            transaction,
-            databaseType,
-            rawVaultSchema.Name,
-            row.KeyColumns,
-            row.KeyValues,
-            $"SELECT {QuoteIdentifier(hashDiffColumn)}");
-        command.CommandText += $" ORDER BY {QuoteIdentifier(loadDateColumn)} DESC";
+        var query = CreateKeyLookupQuery(
+            rawVaultSchema,
+            ResolveKeys(rawVaultSchema, row.KeyColumns, row.KeyValues),
+            E.Constant(rawVaultSchema.Columns.Single(c => c.Name == hashDiffColumn)), loadDateColumn);
 
         int hashDiffIndex = row.TargetColumns
             .Select((column, index) => new { column, index })
             .Single(item => string.Equals(item.column, hashDiffColumn, StringComparison.OrdinalIgnoreCase))
             .index;
         object? incomingHashDiff = row.Values[hashDiffIndex];
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(transaction, query, cancellationToken);
+        if (selectedRows.Count == 0)
         {
             return true;
         }
 
-        object? latestHashDiff = reader.GetValue(0);
+        object? latestHashDiff = selectedRows[0][0];
         if (latestHashDiff == DBNull.Value)
         {
             latestHashDiff = null;
@@ -868,70 +864,51 @@ public sealed class GXDataVaultScheduler
             StringComparison.Ordinal);
     }
 
-    private static DbCommand CreateKeyLookupCommand(
-        DbConnection connection,
-        DbTransaction transaction,
-        DatabaseType databaseType,
-        string tableName,
-        IReadOnlyList<string> keyColumns,
-        IReadOnlyList<object?> keyValues,
-        string selectClause)
+    private static E KeyPredicate(GXTableSchema table, IReadOnlyList<string> columns, IReadOnlyList<object?> values)
     {
-        DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
+        if (columns.Count == 0 || columns.Count != values.Count) throw new ArgumentException("A complete key is required.");
+        return GXSqlExpressions.And(columns.Select((column, i) => GXSqlExpressions.Equal(E.Constant(table.Columns.Single(c => c.Name == column)), GXSqlExpressions.Value(values[i]))).ToArray());
+    }
 
-        List<string> conditions = [];
-        for (int pos = 0; pos != keyColumns.Count; ++pos)
+    private static IReadOnlyList<(GXColumnSchema Column, object? Value)> ResolveKeys(
+        GXTableSchema table, IReadOnlyList<string> columns, IReadOnlyList<object?> values)
+    {
+        if (columns.Count == 0 || columns.Count != values.Count)
+            throw new ArgumentException("A complete key is required.");
+        return columns.Select((name, index) => (
+            Column: table.Columns.Single(column => column.Name == name),
+            Value: values[index])).ToArray();
+    }
+
+    private static GXSelectArgs CreateKeyLookupQuery(GXTableSchema table,
+        IReadOnlyList<(GXColumnSchema Column, object? Value)> keys,
+        E projection, string? descendingColumn = null)
+    {
+        if (keys.Count == 0)
+            throw new ArgumentException("A complete key is required.", nameof(keys));
+        var query = GXSelectArgs.Select(table.Columns);
+        query.Columns.Clear();
+        query.Columns.Add(projection);
+        query.Where.FilterBy(keys.AsEnumerable());
+        foreach (var filter in keys.Where(filter => filter.Value == null))
         {
-            string placeholder = GXSqlParameterHelper.GetPlaceholder(databaseType, $"lk{pos}");
-            conditions.Add($"{QuoteIdentifier(keyColumns[pos])} = {placeholder}");
-
-            DbParameter parameter = command.CreateParameter();
-            parameter.ParameterName = GXSqlParameterHelper.GetParameterName(placeholder);
-            parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(databaseType, keyValues[pos]) ?? DBNull.Value;
-            command.Parameters.Add(parameter);
+            var column = filter.Column;
+            query.Where.And<GXColumnSchema>(_ => column == null);
         }
-
-        command.CommandText = $"{selectClause} FROM {QuoteIdentifier(tableName)} WHERE {string.Join(" AND ", conditions)}";
-        return command;
+        if (descendingColumn != null) query.OrderBy.Add(E.Constant(table.Columns.Single(c => c.Name == descendingColumn)), true);
+        return query;
     }
 
     private static async Task InsertRawVaultRowAsync(
         DbConnection connection,
         DbTransaction transaction,
         DatabaseType databaseType,
-        string tableName,
+        GXTableSchema table,
         IReadOnlyList<string> columns,
         IReadOnlyList<object?> values,
         CancellationToken cancellationToken)
     {
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-
-        List<string> placeholders = [];
-        for (int pos = 0; pos != values.Count; ++pos)
-        {
-            string placeholder = GXSqlParameterHelper.GetPlaceholder(databaseType, $"p{pos}");
-            placeholders.Add(placeholder);
-
-            DbParameter parameter = command.CreateParameter();
-            parameter.ParameterName = GXSqlParameterHelper.GetParameterName(placeholder);
-            parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(databaseType, values[pos]) ?? DBNull.Value;
-            command.Parameters.Add(parameter);
-        }
-
-        StringBuilder sql = new();
-        sql.Append("INSERT ");
-        sql.Append("INTO ");
-        sql.Append(QuoteIdentifier(tableName));
-        sql.Append(" (");
-        sql.Append(string.Join(", ", columns.Select(QuoteIdentifier)));
-        sql.Append(") VALUES (");
-        sql.Append(string.Join(", ", placeholders));
-        sql.Append(')');
-        command.CommandText = sql.ToString();
-
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await new GXDbConnection(connection).InsertAsync(transaction, GXInsertArgs.Insert(values, GXSchemaColumns.Columns(table, columns)), cancellationToken);
     }
 
     private static bool ShouldHashDataVaultColumn(DataVaultColumnRole? role)
@@ -990,69 +967,46 @@ public sealed class GXDataVaultScheduler
             .Select((mapping, index) => new { mapping, alias = $"t{index}" })
             .ToDictionary(item => item.mapping, item => item.alias);
 
+        var query = GXMetadataQueries.Select(rawVaultSchemas[Target(baseMapping).Name], aliases[baseMapping]).WithDistinct();
         List<string> targetColumns = [];
-        List<string> sourceColumns = [];
         foreach (GXDataVaultColumnMapping martColumn in mart.Columns)
         {
-            (GXDataVaultTableMapping mapping, GXDataVaultColumnMapping column) = ResolveRawVaultColumn(rawVaultMappings, martColumn);
-            GXTableSchema sourceSchema = rawVaultSchemas[Target(mapping).Name];
-            string sourceColumn = ResolveColumnName(sourceSchema, column.TargetColumn);
-            string targetColumn = ResolveColumnName(martSchema, martColumn.TargetColumn);
-            targetColumns.Add(QuoteIdentifier(targetColumn));
-            sourceColumns.Add($"{aliases[mapping]}.{QuoteIdentifier(sourceColumn)}");
+            var (mapping, column) = ResolveRawVaultColumn(rawVaultMappings, martColumn);
+            targetColumns.Add(ResolveColumnName(martSchema, martColumn.TargetColumn));
+            query.Columns.Add(GXMetadataQueries.Column(rawVaultSchemas[Target(mapping).Name].Columns.Single(c => c.Name == ResolveColumnName(rawVaultSchemas[Target(mapping).Name], column.TargetColumn)), aliases[mapping]));
         }
-
-        StringBuilder sql = new();
-        sql.Append("INSERT ");
-        sql.Append("INTO ");
-        sql.Append(QuoteIdentifier(martSchema.Name));
-        sql.Append(" (");
-        sql.Append(string.Join(", ", targetColumns));
-        sql.AppendLine(")");
-        sql.Append("SELECT DISTINCT ");
-        sql.AppendLine(string.Join(", ", sourceColumns));
-        sql.Append("FROM ");
-        sql.Append(QuoteIdentifier(rawVaultSchemas[Target(baseMapping).Name].Name));
-        sql.Append(' ');
-        sql.AppendLine(aliases[baseMapping]);
-
-        foreach (GXDataVaultTableMapping mapping in joinedMappings.Skip(1))
+        foreach (var mapping in joinedMappings.Skip(1))
         {
-            string joinCondition = CreateJoinCondition(baseMapping, mapping, rawVaultSchemas, aliases);
-            string latestSatelliteCondition = historyEnabled
-                ? CreateLatestSatelliteCondition(mapping, rawVaultSchemas, aliases)
-                : string.Empty;
-            if (joinCondition.Length != 0 && latestSatelliteCondition.Length != 0)
+            var joinColumns = CreateJoinColumns(baseMapping, mapping, rawVaultSchemas);
+            E? latest = historyEnabled ? CreateLatestSatelliteCondition(mapping, rawVaultSchemas, aliases) : null;
+            if (joinColumns.Count == 0)
             {
-                joinCondition += " AND " + latestSatelliteCondition;
-            }
-            else if (latestSatelliteCondition.Length != 0)
-            {
-                joinCondition = latestSatelliteCondition;
-            }
-            if (joinCondition.Length == 0)
-            {
-                sql.Append("CROSS JOIN ");
+                var sourceSchema = rawVaultSchemas[Target(baseMapping).Name];
+                var destinationSchema = rawVaultSchemas[Target(mapping).Name];
+                if (sourceSchema.Columns.Count == 0 || destinationSchema.Columns.Count == 0)
+                    throw new InvalidOperationException("CROSS JOIN requires table metadata with at least one column.");
+                var sourceAlias = aliases[baseMapping];
+                var destinationAlias = aliases[mapping];
+                // Columns identify the tables; CROSS JOIN does not compare their values.
+                query.Joins.AddCrossJoin<GXColumnSchema, GXColumnSchema>(
+                    _ => GXSql.As(sourceSchema, sourceAlias).Columns[0],
+                    _ => GXSql.As(destinationSchema, destinationAlias).Columns[0]);
             }
             else
             {
-                sql.Append("INNER JOIN ");
+                var first = joinColumns[0];
+                query.Joins.AddInnerJoin(
+                    GXMetadataQueries.JoinColumn(first.Source, aliases[baseMapping]),
+                    GXMetadataQueries.JoinColumn(first.Destination, aliases[mapping]));
+                // For INNER JOIN, additional key comparisons in WHERE retain the same result.
+                foreach (var pair in joinColumns.Skip(1))
+                    query.Where.And(GXSqlExpressions.Equal(
+                        GXMetadataQueries.Column(pair.Source, aliases[baseMapping]),
+                        GXMetadataQueries.Column(pair.Destination, aliases[mapping])));
             }
-            sql.Append(QuoteIdentifier(rawVaultSchemas[Target(mapping).Name].Name));
-            sql.Append(' ');
-            sql.Append(aliases[mapping]);
-            if (joinCondition.Length != 0)
-            {
-                sql.Append(" ON ");
-                sql.Append(joinCondition);
-            }
-            sql.AppendLine();
+            if (latest != null) query.Where.And(latest);
         }
-
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = sql.ToString();
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await new GXDbConnection(connection).InsertAsync(transaction, GXInsertArgs.Insert(query, GXSchemaColumns.Columns(martSchema, targetColumns)), cancellationToken);
     }
 
     private static (GXDataVaultTableMapping Mapping, GXDataVaultColumnMapping Column) ResolveRawVaultColumn(
@@ -1061,7 +1015,8 @@ public sealed class GXDataVaultScheduler
     {
         return rawVaultMappings
             .SelectMany(mapping => mapping.Columns
-                .Where(column => string.Equals(column.SourceColumn, martColumn.SourceColumn, StringComparison.OrdinalIgnoreCase))
+                .Where(column => string.Equals(column.SourceColumn, martColumn.SourceColumn, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(column.TargetColumn, martColumn.SourceColumn, StringComparison.OrdinalIgnoreCase))
                 .Select(column => (Mapping: mapping, Column: column)))
             .OrderBy(candidate => GetRawVaultColumnPriority(candidate.Mapping, candidate.Column, martColumn))
             .FirstOrDefault() is var match && match.Mapping is not null
@@ -1095,15 +1050,14 @@ public sealed class GXDataVaultScheduler
         return 2;
     }
 
-    private static string CreateJoinCondition(
+    private static IReadOnlyList<(GXColumnSchema Source, GXColumnSchema Destination)> CreateJoinColumns(
         GXDataVaultTableMapping baseMapping,
         GXDataVaultTableMapping mapping,
-        IReadOnlyDictionary<string, GXTableSchema> rawVaultSchemas,
-        IReadOnlyDictionary<GXDataVaultTableMapping, string> aliases)
+        IReadOnlyDictionary<string, GXTableSchema> rawVaultSchemas)
     {
         GXTableSchema baseSchema = rawVaultSchemas[Target(baseMapping).Name];
         GXTableSchema schema = rawVaultSchemas[Target(mapping).Name];
-        List<string> conditions = [];
+        List<(GXColumnSchema Source, GXColumnSchema Destination)> columns = [];
         foreach (GXDataVaultColumnMapping baseColumn in baseMapping.Columns)
         {
             GXDataVaultColumnMapping? matchingColumn = mapping.Columns.FirstOrDefault(column =>
@@ -1115,10 +1069,11 @@ public sealed class GXDataVaultScheduler
 
             string baseColumnName = ResolveColumnName(baseSchema, baseColumn.TargetColumn);
             string columnName = ResolveColumnName(schema, matchingColumn.TargetColumn);
-            conditions.Add($"{aliases[baseMapping]}.{QuoteIdentifier(baseColumnName)} = {aliases[mapping]}.{QuoteIdentifier(columnName)}");
+            columns.Add((baseSchema.Columns.Single(c => c.Name == baseColumnName),
+                schema.Columns.Single(c => c.Name == columnName)));
         }
 
-        return string.Join(" AND ", conditions);
+        return columns;
     }
 
     private static bool CanJoinRawVaultColumns(
@@ -1138,7 +1093,7 @@ public sealed class GXDataVaultScheduler
         return role is DataVaultColumnRole.HashKey or DataVaultColumnRole.ParentHashKey;
     }
 
-    private static string CreateLatestSatelliteCondition(
+    private static E? CreateLatestSatelliteCondition(
         GXDataVaultTableMapping mapping,
         IReadOnlyDictionary<string, GXTableSchema> rawVaultSchemas,
         IReadOnlyDictionary<GXDataVaultTableMapping, string> aliases)
@@ -1146,7 +1101,7 @@ public sealed class GXDataVaultScheduler
         if (mapping.ObjectType != DataVaultObjectType.Satellite ||
             !mapping.Columns.Any(column => column.Role == DataVaultColumnRole.HashDiff))
         {
-            return string.Empty;
+            return null;
         }
 
         GXDataVaultColumnMapping loadDate = mapping.Columns.Single(column => column.Role == DataVaultColumnRole.LoadDate);
@@ -1155,27 +1110,24 @@ public sealed class GXDataVaultScheduler
             .ToList();
         if (parentKeys.Count == 0)
         {
-            return string.Empty;
+            return null;
         }
 
         GXTableSchema schema = rawVaultSchemas[Target(mapping).Name];
         string alias = aliases[mapping];
         string subAlias = alias + "_latest";
         string loadDateColumn = ResolveColumnName(schema, loadDate.TargetColumn);
-        List<string> keyConditions = parentKeys
+        List<E> keyConditions = parentKeys
             .Select(column =>
             {
                 string keyColumn = ResolveColumnName(schema, column.TargetColumn);
-                return $"{subAlias}.{QuoteIdentifier(keyColumn)} = {alias}.{QuoteIdentifier(keyColumn)}";
+                return GXSqlExpressions.Equal(GXMetadataQueries.Column(schema.Columns.Single(c => c.Name == keyColumn), subAlias), GXMetadataQueries.Column(schema.Columns.Single(c => c.Name == keyColumn), alias));
             })
             .ToList();
 
-        return $"{alias}.{QuoteIdentifier(loadDateColumn)} = (SELECT MAX({subAlias}.{QuoteIdentifier(loadDateColumn)}) FROM {QuoteIdentifier(schema.Name)} {subAlias} WHERE {string.Join(" AND ", keyConditions)})";
-    }
-
-    private static string QuoteIdentifier(string identifier)
-    {
-        return $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+        var query = GXMetadataQueries.Select(schema, subAlias).Filter(GXSqlExpressions.And(keyConditions.ToArray()));
+        query.Columns.Add(GXSqlExpressions.MaxExpression(GXMetadataQueries.Column(schema.Columns.Single(c => c.Name == loadDateColumn), subAlias)));
+        return GXSqlExpressions.Equal(GXMetadataQueries.Column(schema.Columns.Single(c => c.Name == loadDateColumn), alias), GXSubqueryExpressions.Scalar<object?>(query));
     }
 
     private static List<GXDataVaultTableMapping> ResolveStagingMappings(
@@ -1329,7 +1281,3 @@ public sealed class GXDataVaultScheduler
             ?? throw new InvalidOperationException("Failed to access Gurux database settings.");
     }
 }
-
-
-
-

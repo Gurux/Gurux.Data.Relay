@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using System.Data;
 using Gurux.Data.Relay.Enums;
 using Gurux.Data.Relay.Shared;
@@ -15,13 +47,13 @@ internal sealed class GXRelationalRuntimeStateStore(GXDbConnection connection, I
             return new GXClientState
             {
                 Tables = (await connection.SelectAsync<GXClientTableState>(transaction,
-                GXSelectArgs.SelectAll<GXClientTableState>(), cancellationToken)).OrderBy(r => r.Position).ToList()
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXClientTableState>(connection), cancellationToken)).OrderBy(r => r.Position).ToList()
             };
         if (mode == ApplicationMode.Server)
             return new GXServerState
             {
-                TableMappings = (await connection.SelectAsync<GXTableMapping>(transaction, GXSelectArgs.SelectAll<GXTableMapping>(), cancellationToken)).OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ToList(),
-                ProcessedMessages = (await connection.SelectAsync<GXProcessedMessageState>(transaction, GXSelectArgs.SelectAll<GXProcessedMessageState>(), cancellationToken)).OrderBy(r => r.Position).ToList()
+                TableMappings = (await connection.SelectAsync<GXTableMapping>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXTableMapping>(connection), cancellationToken)).OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ToList(),
+                ProcessedMessages = (await connection.SelectAsync<GXProcessedMessageState>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXProcessedMessageState>(connection), cancellationToken)).OrderBy(r => r.Position).ToList()
             };
         throw new NotSupportedException($"Unsupported state mode: {mode}.");
     }
@@ -29,7 +61,7 @@ internal sealed class GXRelationalRuntimeStateStore(GXDbConnection connection, I
     public async Task SaveAsync(ApplicationMode mode, object state)
     {
         var existing = await connection.SingleOrDefaultAsync<RelayRuntimeState>(transaction,
-            GXSelectArgs.SelectAll<RelayRuntimeState>(r => r.Id == mode), cancellationToken);
+            Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayRuntimeState>(connection, ("Id", mode)), cancellationToken);
         var record = new RelayRuntimeState { Id = mode, Version = 1 };
         GXEntityPersistence.CopyMetadata((IGXEntityMetadata)state, record);
         await GXEntityPersistence.SaveAsync(connection, transaction, record, existing, cancellationToken);

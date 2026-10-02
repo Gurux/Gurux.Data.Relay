@@ -1,3 +1,37 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using E = System.Linq.Expressions.Expression;
+using Gurux.Service.Orm;
 using System.Data.Common;
 using System.Globalization;
 using System.Text.Json;
@@ -103,51 +137,22 @@ public sealed class GXTableCsvImporter(IGXDatabaseConnectionFactory connections,
     {
         if (!(await metadata.GetTableNamesAsync(database, cancellationToken)).Contains(tableName, StringComparer.Ordinal))
             throw new ArgumentException("The selected table does not exist.");
-        string Quote(string name) => database.Type switch
-        {
-            DatabaseType.MSSQL => "[" + name.Replace("]", "]]") + "]",
-            DatabaseType.MySQL or DatabaseType.MariaDB => "`" + name.Replace("`", "``") + "`",
-            _ => "\"" + name.Replace("\"", "\"\"") + "\""
-        };
-        string table = string.Join(".", tableName.Split('.').Select(Quote));
+        var table = await metadata.DescribeTableAsync(database, tableName, cancellationToken);
         await using var connection = connections.CreateConnection(database);
         await connection.OpenAsync(cancellationToken);
-        List<string> columns = [];
-        List<Type> types = [];
-        await using (var schemaCommand = connection.CreateCommand())
-        {
-            schemaCommand.CommandText = $"SELECT * FROM {table} WHERE 1 = 0";
-            await using var reader = await schemaCommand.ExecuteReaderAsync(cancellationToken);
-            for (int i = 0; i < reader.FieldCount; ++i)
-            {
-                columns.Add(reader.GetName(i));
-                types.Add(reader.GetFieldType(i));
-            }
-        }
+        List<string> columns = table.Columns.Select(column => column.Name).ToList();
+        List<Type> types = table.Columns.Select(column => column.Type ?? typeof(object)).ToList();
         // Validate the complete file before executing any INSERT.
         var rows = parse(columns);
         if (rows.Count == 0) throw new ArgumentException($"The {format} file contains no data rows.");
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        string[] parameters = Enumerable.Range(0, columns.Count).Select(i =>
-            database.Type == DatabaseType.Oracle ? $":p{i}" :
-            database.Type is DatabaseType.DB2 or DatabaseType.SapHana ? "?" : $"@p{i}").ToArray();
-        command.CommandText = $"INSERT INTO {table} ({string.Join(", ", columns.Select(Quote))}) VALUES ({string.Join(", ", parameters)})";
-        for (int i = 0; i < columns.Count; ++i)
-        {
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = $"p{i}";
-            command.Parameters.Add(parameter);
-        }
         for (int r = 0; r < rows.Count; ++r)
         {
             try
             {
-                for (int c = 0; c < columns.Count; ++c)
-                    command.Parameters[c].Value = ConvertValue(rows[r][c], types[c], csv);
-                await command.ExecuteNonQueryAsync(cancellationToken);
+                object?[] values = Enumerable.Range(0, columns.Count).Select(c => ConvertValue(rows[r][c], types[c], csv)).ToArray();
+                await new GXDbConnection(connection).InsertAsync(transaction, GXInsertArgs.Insert(values, GXSchemaColumns.Columns(table, columns)), cancellationToken);
             }
             catch (Exception ex) when (ex is DbException or FormatException or OverflowException or InvalidCastException)
             {

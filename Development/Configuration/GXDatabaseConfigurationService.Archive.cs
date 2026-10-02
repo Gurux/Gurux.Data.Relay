@@ -1,6 +1,40 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Data.Relay.Shared;
 using Gurux.Data.Relay.Enums;
 using Gurux.Service.Orm;
+using Gurux.Service.Orm.Model;
+using Gurux.Service.Orm.Common.Model;
 using System.ComponentModel.DataAnnotations;
 using Gurux.Data.Relay.Shared.Enums;
 
@@ -22,7 +56,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
             async Task<GXSettings> Read(ApplicationMode mode)
             {
                 var record = await connection.SingleOrDefaultAsync<RelayConfiguration>(transaction,
-                    GXSelectArgs.SelectAll<RelayConfiguration>(r => r.Mode == mode), cancellationToken);
+                    Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayConfiguration>(connection, ("Mode", mode)), cancellationToken);
                 return record is null ? new GXSettings { Mode = mode } : await store.LoadAsync(record.PayloadId);
             }
             var archive = new GXSettingsArchive
@@ -32,13 +66,25 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
                 Server = await Read(ApplicationMode.Server),
                 DataVault = await Read(ApplicationMode.DataVault)
             };
+            foreach (GXDatabase database in archive.Databases)
+            {
+                var configuration = new GXDatabaseConfiguration { Id = database.Id, Type = (Gurux.Service.Orm.Common.Enums.DatabaseType)database.Type, ConnectionString = database.ConnectionString };
+                var names = archive.Client.Databases.Where(d => d.Id == database.Id).SelectMany(d => d.Tables ?? []).Select(t => t.Name)
+                    .Concat(archive.DataVault.Databases.Where(d => d.Id == database.Id).SelectMany(d => d.Mappings ?? []).Select(m => m.TargetTable?.Name))
+                    .Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (names.Length == 0) continue;
+                await using var physical = _connectionFactory.CreateConnection(configuration);
+                await physical.OpenAsync(cancellationToken);
+                var schema = new GXSchemaManager(physical);
+                archive.Schemas[database.Id] = names.Where(schema.TableExist).Select(schema.Describe).ToList();
+            }
             transaction.Commit();
             return archive;
         }
         finally { ConfigurationGate.Release(); }
     }
 
-    public async Task ImportAllSettingsAsync(GXSettingsArchive archive, CancellationToken cancellationToken)
+    public async Task ImportAllSettingsAsync(GXSettingsArchive archive, IReadOnlyDictionary<Guid, Guid>? databaseMap, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(archive);
         if (archive.FormatVersion != 2) throw new ArgumentException("Only shared database archive format 2 is supported.");
@@ -49,6 +95,15 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
         if (archive.Client?.Mode != ApplicationMode.Client || archive.Server?.Mode != ApplicationMode.Server ||
             archive.DataVault?.Mode != ApplicationMode.DataVault)
             throw new ArgumentException("The file must contain client, server and datavault settings with matching modes.");
+        if (databaseMap is { Count: > 0 })
+        {
+            await EnsureConfigurationStoreAsync(cancellationToken);
+            await using var native = CreateConfigurationConnection();
+            await native.OpenAsync(cancellationToken);
+            using var connection = new GXDbConnection(native);
+            var catalog = await connection.SelectAllAsync<Shared.GXDatabase>(cancellationToken: cancellationToken);
+            GXSettingsImportDatabaseMapper.RemapArchive(archive, databaseMap, catalog);
+        }
         GXSettings[] settings = [archive.Client, archive.Server, archive.DataVault];
         foreach (var mode in settings)
             foreach (var selection in mode.Databases)
@@ -63,12 +118,17 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
                 selection.DeletedColumn = database.DeletedColumn;
             }
         foreach (var value in settings) ValidateArchiveShape(value);
+        GXDataVaultLegacyMappingRecovery.Recover(
+            archive.DataVault.Databases.SelectMany(database => database.Mappings ?? [])
+                .Concat(archive.DataVault.Mappings ?? []),
+            archive.Schemas.ToDictionary(item => item.Key, item => (IReadOnlyList<GXTableSchema>)item.Value));
         // Validate before changing the database. Empty, not-yet-configured modes are valid.
         GXModeConfiguration[] configurations = [GXConfigurationMapper.FromEntities<GXClientConfiguration>(archive.Client),
             GXConfigurationMapper.FromEntities<GXServerConfiguration>(archive.Server),
             GXConfigurationMapper.FromEntities<GXDataVaultConfiguration>(archive.DataVault)];
         foreach (var configuration in configurations)
             Validator.ValidateObject(configuration, new ValidationContext(configuration), validateAllProperties: true);
+        GXDataVaultMappingValidator.Validate(configurations.OfType<GXDataVaultConfiguration>().Single().GetMappings());
         foreach (var transport in configurations.OfType<GXServerConfiguration>().Single().Transports)
             GXServerTransportValidator.Validate(transport);
         await ConfigurationGate.WaitAsync(cancellationToken);
@@ -84,7 +144,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
                 foreach (var database in archive.Databases)
                 {
                     var existing = await connection.SingleOrDefaultAsync<Shared.GXDatabase>(transaction,
-                        GXSelectArgs.SelectById<Shared.GXDatabase>(database.Id), cancellationToken);
+                        Gurux.Data.Relay.Database.GXMetadataQueries.Select<Shared.GXDatabase>(connection, ("Id", database.Id)), cancellationToken);
                     if (existing is not null) GXEntityPersistence.CopyMetadata(existing, database);
                     else database.ConcurrencyStamp = null;
                     await GXEntityPersistence.SaveAsync(connection, transaction, database, existing, cancellationToken);
@@ -93,7 +153,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
                 {
                     var mode = value.Mode;
                     var record = await connection.SingleOrDefaultAsync<RelayConfiguration>(transaction,
-                        GXSelectArgs.SelectAll<RelayConfiguration>(r => r.Mode == mode), cancellationToken)
+                        Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayConfiguration>(connection, ("Mode", mode)), cancellationToken)
                         ?? new RelayConfiguration
                         {
                             Mode = mode,
@@ -124,6 +184,28 @@ public sealed partial class GXDatabaseConfigurationService : IGXSettingsArchiveS
             }
         }
         finally { ConfigurationGate.Release(); }
+        foreach (GXDatabase database in archive.Databases)
+        {
+            if (!archive.Schemas.TryGetValue(database.Id, out var schemas)) continue;
+            var configuration = new GXDatabaseConfiguration { Id = database.Id, Type = (Gurux.Service.Orm.Common.Enums.DatabaseType)database.Type, ConnectionString = database.ConnectionString };
+            await using var physical = _connectionFactory.CreateConnection(configuration);
+            await physical.OpenAsync(cancellationToken);
+            var schema = new GXSchemaManager(physical);
+            // SQLite identifiers are case-insensitive, but its catalog lookup can be case-sensitive.
+            var sqliteTables = configuration.Type == Gurux.Service.Orm.Common.Enums.DatabaseType.SqLite
+                ? schema.GetTables().ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : null;
+            foreach (var table in schemas)
+            {
+                bool exists = sqliteTables is not null
+                    ? sqliteTables.Contains(table.Name)
+                    : schema.TableExist(table.Name);
+                if (exists) continue;
+                Database.GXDataVaultSchemaCompatibility.Normalize(table, configuration.Type);
+                schema.CreateTable(table);
+                sqliteTables?.Add(table.Name);
+            }
+        }
         foreach (var value in settings)
             _changes?.Publish(new(value.Mode.ToString().ToLowerInvariant(), GXRelayChangeKind.Configuration));
         foreach (var handlers in new[] { ClientConfigurationSaved, ServerConfigurationSaved, DataVaultConfigurationSaved })

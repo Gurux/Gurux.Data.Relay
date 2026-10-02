@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using System.ComponentModel.DataAnnotations;
 using System.Data;
 using Gurux.Data.Relay.Shared;
@@ -39,7 +71,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXDatabaseCatalogS
             using var transaction = connection.BeginTransaction();
             if (database.Id == Guid.Empty) database.Id = Guid.NewGuid();
             var existing = await connection.SingleOrDefaultAsync<GXDatabase>(transaction,
-                GXSelectArgs.SelectById<GXDatabase>(database.Id), token);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDatabase>(connection, ("Id", database.Id)), token);
             await GXEntityPersistence.SaveAsync(connection, transaction, database, existing, token);
             transaction.Commit();
         }
@@ -66,7 +98,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXDatabaseCatalogS
             await native.OpenAsync(token);
             using var connection = new GXDbConnection(native);
             using var transaction = connection.BeginTransaction();
-            var database = await connection.SingleOrDefaultAsync<GXDatabase>(transaction, GXSelectArgs.SelectById<GXDatabase>(id), token)
+            var database = await connection.SingleOrDefaultAsync<GXDatabase>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDatabase>(connection, ("Id", id)), token)
                 ?? throw new DBConcurrencyException("Database was deleted. Reload the catalog.");
             if (concurrencyStamp is null || database.ConcurrencyStamp != concurrencyStamp)
                 throw new DBConcurrencyException("Database has changed. Reload the catalog before deleting.");

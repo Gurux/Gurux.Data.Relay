@@ -32,10 +32,21 @@
 
 namespace Gurux.Data.Relay.Shared;
 
-/// <summary>Audit fields and the version read by the caller of a save operation.</summary>
+/// <summary>
+/// Audit fields and the version read by the caller of a save operation.
+/// </summary>
 public interface IGXEntityMetadata
 {
+    /// <summary>
+    /// Gets or sets the date and time when the item was created.
+    /// </summary>
     DateTimeOffset? CreationTime { get; set; }
+    /// <summary>
+    /// Gets or sets the date and time when the item was last updated.
+    /// </summary>
     DateTimeOffset? Updated { get; set; }
+    /// <summary>
+    /// Gets or sets the concurrency stamp for the item, which is used to detect concurrent updates.
+    /// </summary>
     string? ConcurrencyStamp { get; set; }
 }

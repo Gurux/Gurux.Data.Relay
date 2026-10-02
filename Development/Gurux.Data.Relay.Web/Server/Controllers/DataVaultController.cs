@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Text;
@@ -32,6 +64,7 @@ public sealed class DataVaultController : ControllerBase
         [FromServices] IGXDataVaultRuntimeStateStore runtimeState, CancellationToken cancellationToken)
     {
         var configuration = await _administrationService.GetDataVaultSettingsAsync(cancellationToken);
+        await RecoverLegacyMappingsAsync(configuration, cancellationToken);
         var database = configuration.Databases.FirstOrDefault(d => d.Mappings?.Any(m => m.Id == id) == true);
         if (database == null) return NotFound("Mapping not found.");
         var scheduler = new Gurux.Data.Relay.Client.GXDataVaultScheduler(connections, new Gurux.Data.Relay.Client.GXDatabaseChangeNotifierFactory(connections),
@@ -55,6 +88,8 @@ public sealed class DataVaultController : ControllerBase
         [FromServices] Database.IGXDatabaseConnectionFactory connections,
         CancellationToken cancellationToken)
     {
+        if (request.Overwrite && (request.UseExistingTable || !request.CreateIfMissing))
+            return BadRequest("Overwrite requires CreateIfMissing and cannot be combined with UseExistingTable.");
         var databases = await _administrationService.GetDatabasesAsync(ApplicationMode.DataVault, cancellationToken);
         var database = databases.FirstOrDefault(item => item.Id == databaseId);
         if (database == null) return NotFound("Database not found.");
@@ -74,11 +109,13 @@ public sealed class DataVaultController : ControllerBase
             var target = GXVaultTableSchemaBuilder.Build(request, source, name => manager.Describe(name),
                 name => mappings.FirstOrDefault(m => m.DatabaseIndex == databaseIndex &&
                     string.Equals(m.Mapping.TargetTable.Name, name, StringComparison.OrdinalIgnoreCase)).Mapping?.ObjectType);
-            bool exists = manager.GetTables().Any(name => string.Equals(name, target.Name, StringComparison.OrdinalIgnoreCase) ||
+            Database.GXDataVaultSchemaCompatibility.Normalize(target, database.Type);
+            var existingTableName = manager.GetTables().FirstOrDefault(name => string.Equals(name, target.Name, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(name, target.ToString(), StringComparison.OrdinalIgnoreCase));
+            bool exists = existingTableName is not null;
             if (request.UseExistingTable && !exists)
                 return NotFound("The selected target table no longer exists. Select an existing table or choose Create new table.");
-            if (exists && !request.UseExistingTable)
+            if (exists && !request.UseExistingTable && !request.CreateIfMissing)
                 return Conflict("The target table already exists.");
             if (request.UseExistingTable && !request.AddMapping)
                 return BadRequest("Select Add mapping when using an existing table.");
@@ -86,11 +123,11 @@ public sealed class DataVaultController : ControllerBase
                 return BadRequest("Source and target tables must be different.");
             if (!exists && !request.CreateIfMissing)
                 return Ok(new Shared.GXCreateVaultTableResult { TableName = target.ToString(), RequiresCreation = true });
-            if (exists)
+            if (exists && !request.Overwrite)
             {
                 var roles = GXVaultTableMappingBuilder.Build(request, target, null).Columns;
                 var hashAlgorithm = (await _administrationService.GetDataVaultSettingsAsync(cancellationToken)).HashAlgorithm;
-                var existing = manager.Describe(request.UseExistingTable ? request.TargetTable : target.ToString());
+                var existing = manager.Describe(existingTableName!);
                 target.Name = existing.Name;
                 target.Schema = existing.Schema;
                 if (string.Equals(source.ToString(), target.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -139,7 +176,14 @@ public sealed class DataVaultController : ControllerBase
                 foreach (var column in mapping.Columns)
                     column.TargetColumn = target.Columns.Single(c => string.Equals(c.Name, column.TargetColumn, StringComparison.OrdinalIgnoreCase)).Name;
             }
-            if (!exists) manager.CreateTable(target);
+            // Validate the request and mapping before removing any existing data.
+            if (exists && request.Overwrite)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // Use catalog casing: the ORM checks existence before dropping the table.
+                manager.DropTable(existingTableName!);
+            }
+            if (!exists || request.Overwrite) manager.CreateTable(target);
             var result = new Shared.GXCreateVaultTableResult { TableName = target.ToString() };
             if (mapping != null)
             {
@@ -261,12 +305,33 @@ public sealed class DataVaultController : ControllerBase
                 foreach (var item in configuration.Databases) item.Mappings?.RemoveAll(m => m.Id == id.Value);
             database.Mappings ??= [];
             database.Mappings.Add(mapping);
+            await RecoverLegacyMappingsAsync(configuration, token);
             await _administrationService.UpdateDataVaultSettingsAsync(configuration, token);
             return Ok(mapping);
         }
         catch (System.Data.DBConcurrencyException ex) { return Conflict(new ProblemDetails { Detail = ex.Message }); }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or System.ComponentModel.DataAnnotations.ValidationException)
         { return BadRequest(new ProblemDetails { Detail = ex.Message }); }
+    }
+
+    private async Task RecoverLegacyMappingsAsync(GXDataVaultConfiguration configuration, CancellationToken cancellationToken)
+    {
+        GXDataVaultTableMapping[] incomplete = configuration.GetMappings()
+            .Where(mapping => mapping.ObjectType == DataVaultObjectType.Staging && mapping.Columns.Count == 0 ||
+                mapping.Columns.Any(column => string.IsNullOrWhiteSpace(column.TargetColumn)))
+            .ToArray();
+
+        var schemas = new Dictionary<Guid, IReadOnlyList<Gurux.Service.Orm.Common.Model.GXTableSchema>>();
+        foreach (IGrouping<Guid, GXDataVaultTableMapping> group in incomplete.GroupBy(mapping => mapping.Database))
+        {
+            GXDatabaseConfiguration database = configuration.Databases.SingleOrDefault(item => item.Id == group.Key)
+                ?? throw new InvalidOperationException($"The mapping database '{group.Key}' was not found.");
+            string[] targets = group.Select(mapping => mapping.TargetTable.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            schemas[group.Key] = await Task.WhenAll(targets.Select(target =>
+                _administrationService.DescribeTableAsync(database, target, cancellationToken)));
+        }
+        GXDataVaultLegacyMappingRecovery.Recover(configuration.GetMappings(), schemas);
     }
 
     /// <summary>Create a Data Vault mapping in a shared catalog database.</summary>
@@ -315,9 +380,9 @@ public sealed class DataVaultController : ControllerBase
 
     /// <summary>Import settings from a JSON document.</summary>
     [HttpPost("settings/import")]
-    public async Task<IActionResult> ImportSettings([FromBody] GXSettings settings, CancellationToken cancellationToken)
+    public async Task<IActionResult> ImportSettings([FromBody] GXSettingsImportRequest request, CancellationToken cancellationToken)
     {
-        await _administrationService.ImportSettingsJsonAsync(ApplicationMode.DataVault, System.Text.Json.JsonSerializer.Serialize(settings), cancellationToken);
+        await _administrationService.ImportSettingsJsonAsync(ApplicationMode.DataVault, request.Json, request.DatabaseMap, cancellationToken);
         return Ok(new { Succeeded = true });
     }
 

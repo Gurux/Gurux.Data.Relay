@@ -37,6 +37,8 @@
 @using System.Diagnostics
 @using Gurux.UI.Components.Table
 @using Gurux.UI.Components.ContextMenu
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 
 <GXLiveView Mode="@Mode" Kinds="@(GXRelayChangeKind.Configuration | GXRelayChangeKind.Events)" IsEditing="@(() => _action != CrudAction.None)" AnnounceEditing="false" OnChanged="ReloadLiveAsync">
@@ -44,20 +46,14 @@
     <section class="panel">
         <h2>@Title</h2>
 
-        @if (_action != CrudAction.None && !string.IsNullOrEmpty(_message))
-        {
-            <p class="notice" role="alert">@_message</p>
-        }
+
         @if (_action == CrudAction.None)
         {
             <div class="actions-row">
                 <button class="btn btn-outline-danger" @onclick="OpenCleanDialog">Clean</button>
             </div>
 
-            @if (!string.IsNullOrWhiteSpace(_message))
-            {
-                <p class="notice">@_message</p>
-            }
+
 
             <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXEventLog" Context="row" @ref="_table" @bind-Active="_activeEvent"
                      ShowAllData="false" ShowAllUsers="false" ShowRemoved="false" ItemsProvider="GetEventItems" OnSearch="LoadAsync">
@@ -128,6 +124,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "modeeventspanel-" + Guid.NewGuid().ToString("N");
     private string FormatDatabaseOption(GXDatabase? database) => database != null ? GetDatabaseLabel(database, _databases.IndexOf(database)) : "All databases";
 
@@ -187,6 +184,8 @@
     private async Task ConfirmCleanAsync()
     {
         if (_saving) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _saving = true;
         try
         {
@@ -194,9 +193,9 @@
             _action = CrudAction.None;
             _table = null;
             await LoadAsync();
-            _message = deleted > 0 ? $"Cleaned {deleted} log entries." : "No log entries were cleaned.";
+            NotificationService.SetMessage(ref _message, deleted > 0 ? $"Cleaned {deleted} log entries." : "No log entries were cleaned.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
         finally { _saving = false; }
     }
     private async Task CancelCleanAsync()

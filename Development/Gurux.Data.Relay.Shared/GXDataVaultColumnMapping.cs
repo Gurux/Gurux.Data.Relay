@@ -67,11 +67,15 @@ public sealed class GXDataVaultColumnMapping : IUnique<Guid>, IGXEntityMetadata
     public string SourceColumn { get; set; } = string.Empty;
 
     /// <summary>Raw Vault mapping supplying this Mart column.</summary>
+    [DataMember]
     public Guid? SourceMappingId { get; set; }
 
+    [DataMember]
     public Aggregation Aggregation { get; set; }
 
+    [DataMember]
     public string TargetColumn { get; set; } = string.Empty;
 
+    [DataMember]
     public DataVaultColumnRole? Role { get; set; } = DataVaultColumnRole.HashKey;
 }

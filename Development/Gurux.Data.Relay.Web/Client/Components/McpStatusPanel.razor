@@ -1,0 +1,31 @@
+@inject NavigationManager Navigation
+
+<div class="card">
+    <div class="card-body">
+        <h3>MCP</h3>
+        <p>Model Context Protocol endpoint for Gurux Data Relay.</p>
+        <dl>
+            <dt>Endpoint</dt>
+            <dd><code>@Endpoint</code></dd>
+            <dt>Transport</dt>
+            <dd>HTTP MCP (Streamable HTTP)</dd>
+        </dl>
+        <h4>Available tools</h4>
+        <ul>
+            <li><code>list_databases</code>, <code>list_tables</code></li>
+            <li><code>get_table_schema</code>, <code>get_sample_rows</code></li>
+            <li><code>get_table_statistics</code></li>
+            <li><code>create_data_vault_mapping</code></li>
+            <li><code>apply_model</code></li>
+            <li><code>create_information_mart</code></li>
+            <li><code>list_server_transports</code></li>
+            <li><code>list_transport_databases</code></li>
+            <li><code>create_server_transport</code></li>
+        </ul>
+        <p class="text-muted">Configure this URL in the MCP client configuration. HTTPS uses the certificate configured for this Web Server.</p>
+    </div>
+</div>
+
+@code {
+    private string Endpoint => new Uri(new Uri(Navigation.BaseUri), "mcp").ToString();
+}

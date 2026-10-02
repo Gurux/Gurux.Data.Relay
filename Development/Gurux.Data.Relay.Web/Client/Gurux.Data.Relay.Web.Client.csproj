@@ -1,28 +1,40 @@
 <Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
 
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>Gurux.Data.Relay.Web.Client</RootNamespace>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>Gurux.Data.Relay.Web.Client</RootNamespace>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Authors>Gurux Ltd</Authors>
+        <Company>Gurux Ltd</Company>
+        <Copyright>Copyright (c) 1998-2026 Gurux Ltd. All rights reserved.</Copyright>
+        <PackageProjectUrl>www.gurux.fi/Gurux.Updater.Net</PackageProjectUrl>
+        <Description>Gurux Data Relay Shared library.</Description>
+        <Version Condition=" '$(BUILD_BUILDNUMBER)' == '' ">0.0.1-local</Version>
+        <Version Condition=" '$(BUILD_BUILDNUMBER)' != '' ">$(BUILD_BUILDNUMBER)</Version>
+        <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+        <PackageLicenseExpression>GPL-2.0-only</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/Gurux/Gurux.Data.Relay</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Gurux.Scheduling" Version="1.0.2609.2201" />
-    <PackageReference Include="Gurux.UI.Components" Version="4.0.2609.2201" />
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.12" />
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.12" />
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.12" PrivateAssets="all" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Gurux.Scheduling" Version="1.0.2609.2201" />
+        <PackageReference Include="Gurux.UI.Components" Version="4.0.2610.201" />
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.12" />
+        <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.12" />
+        <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.12" PrivateAssets="all" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="..\readme.md" Link="wwwroot\readme.md" ContentRoot="$(MSBuildProjectDirectory)\..\" />
-    <Content Include="Components\mermaid.esm.min.mjs" Link="wwwroot\Components\mermaid.esm.min.mjs" ContentRoot="$(MSBuildProjectDirectory)\" />
-    <Content Include="Components\chunks\**\*.mjs" Link="wwwroot\Components\chunks\%(RecursiveDir)%(Filename)%(Extension)" ContentRoot="$(MSBuildProjectDirectory)\" />
-  </ItemGroup>
+    <ItemGroup>
+        <Content Include="..\readme.md" Link="wwwroot\readme.md" ContentRoot="$(MSBuildProjectDirectory)\..\" />
+        <Content Include="Components\mermaid.esm.min.mjs" Link="wwwroot\Components\mermaid.esm.min.mjs" ContentRoot="$(MSBuildProjectDirectory)\" />
+        <Content Include="Components\chunks\**\*.mjs" Link="wwwroot\Components\chunks\%(RecursiveDir)%(Filename)%(Extension)" ContentRoot="$(MSBuildProjectDirectory)\" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\Gurux.Data.Relay.Shared\Gurux.Data.Relay.Shared.csproj" />
-  </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\Gurux.Data.Relay.Shared\Gurux.Data.Relay.Shared.csproj" />
+    </ItemGroup>
 
 </Project>

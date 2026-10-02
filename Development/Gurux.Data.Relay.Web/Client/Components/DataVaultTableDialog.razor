@@ -34,14 +34,13 @@
 @using Gurux.Data.Relay.Configuration
 @using Gurux.Data.Relay.Shared
 @using Gurux.Data.Relay.Shared.Enums
-
+@using Gurux.UI.Components.Enums
+@inject IGXProgress Progress
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 <GXValidationDialog Model="@this" Title="@($"Add {_type}")" HelpTopic="@HelpTopic" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
-    @if (!string.IsNullOrWhiteSpace(_error))
-    {
-        <div class="alert alert-danger" role="alert">@_error</div>
-    }
-    <fieldset disabled="@_busy">
+
+    <fieldset disabled="@Progress.IsBusy">
         <label>Source table</label>
         <DropdownSearch Items="_tables" @bind-Value="_source" @bind-Value:after="LoadColumnsAsync" ShowItemsWhenEmpty="true" class="form-control" />
         <ValidationMessage For="@(() => _source)" />
@@ -156,6 +155,7 @@
     </fieldset>
 </GXValidationDialog>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private string HelpTopic => _type switch
     {
         DataVaultObjectType.Hub => "add-hub",
@@ -187,7 +187,7 @@
         t.Split('.').Last().StartsWith("HUB_", StringComparison.OrdinalIgnoreCase) ||
         (_type == DataVaultObjectType.Satellite && (t.Split('.').Last().StartsWith("LNK_", StringComparison.OrdinalIgnoreCase) || t.Split('.').Last().StartsWith("LINK_", StringComparison.OrdinalIgnoreCase))));
     private List<string> PayloadColumns => _selectedColumns.Where(c => _type != DataVaultObjectType.Reference || c != _businessKey).ToList();
-    private bool CanCreate => !_busy && !string.IsNullOrWhiteSpace(_target) &&
+    private bool CanCreate => !Progress.IsBusy && !string.IsNullOrWhiteSpace(_target) &&
         (_createNewTable || _tables.Contains(_target, StringComparer.OrdinalIgnoreCase) && _targetColumns.Count != 0 &&
             ExpectedColumnNames.All(c => WritableTargetColumns.Contains(SelectedTarget(c), StringComparer.OrdinalIgnoreCase)) &&
             ExpectedColumnNames.Select(SelectedTarget).Distinct(StringComparer.OrdinalIgnoreCase).Count() == ExpectedColumnNames.Count()) && (_type switch
@@ -217,12 +217,13 @@
     }
     private string? _businessKey;
     private List<GXColumnAlias> _columnAliases = GXColumnAlias.Defaults();
-    private string? _source, _target, _error;
+    private string? _source, _target;
     private DataVaultObjectType _type;
     private bool _addMapping = true;
-    private bool _busy;
     protected override async Task OnInitializedAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         _type = ObjectType;
         _createNewTable = !MappingMode;
         _source = SourceTable;
@@ -241,7 +242,7 @@
             await LoadColumnsAsync();
             await LoadTargetColumnsAsync();
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
     private async Task LoadColumnsAsync()
     {
@@ -252,9 +253,8 @@
         _parents.Clear();
         if (_type == DataVaultObjectType.Link) { _parents.Add(new()); _parents.Add(new()); }
         else if (_type == DataVaultObjectType.Satellite) _parents.Add(new());
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         if (_database == null || string.IsNullOrWhiteSpace(_source)) return;
-        _busy = true;
         try
         {
             _columns = (await Api.GetColumnsAsync(_database, _source, default)).Columns;
@@ -276,8 +276,7 @@
                 }
             }
         }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
     private string? MatchColumn(string name) => _columns.FirstOrDefault(c =>
         string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))?.Name;
@@ -334,7 +333,7 @@
     private async Task ChangeTableModeAsync()
     {
         _target = null;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         await LoadTargetColumnsAsync();
     }
 
@@ -344,24 +343,23 @@
         int version = ++_targetVersion;
         _targetColumns = [];
         ClearTargetSelections();
-        _busy = false;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         if (_createNewTable ||
             !_tables.Contains(_target?.Trim() ?? "", StringComparer.OrdinalIgnoreCase)) return;
-        _busy = true;
         try
         {
             var columns = (await Api.GetColumnsAsync(Database, _target!.Trim(), default)).Columns;
             if (version == _targetVersion) _targetColumns = columns;
         }
-        catch (Exception ex) { if (version == _targetVersion) _error = $"Could not load target columns: {ex.Message}"; }
-        finally { if (version == _targetVersion) _busy = false; }
+        catch (Exception ex) { if (version == _targetVersion) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"Could not load target columns: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true)); } }
     }
     private int _targetVersion;
 
     private async Task SuggestParentAsync(GXVaultParentSelection parent)
     {
         if (_database == null || !ParentTables.Contains(parent.Table)) return;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         string table = parent.Table;
         string source = parent.SourceColumn;
         string target = parent.Column;
@@ -391,16 +389,16 @@
                 parent.Column = candidate;
             }
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
     private void ToggleColumn(string name, bool selected)
     {
         if (selected) _selectedColumns.Add(name); else _selectedColumns.Remove(name);
     }
-    private async Task Cancel() { if (!_busy) await OnCancel.InvokeAsync(); }
+    private async Task Cancel() { if (!Progress.IsBusy) await OnCancel.InvokeAsync(); }
     private async Task CreateAsync()
     {
-        if (_busy || !CanCreate) return;
+        if (Progress.IsBusy || !CanCreate) return;
         await SubmitAsync(new()
         {
             SourceTable = _source ?? "",
@@ -417,16 +415,14 @@
     }
     private async Task SubmitAsync(GXCreateVaultTableRequest request)
     {
-        _busy = true;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         try
         {
             var result = await Api.CreateVaultTableAsync(Database.Id, request, default);
             if (result.RequiresCreation) throw new InvalidOperationException("Choose Create new table to create the target table.");
             await OnCompleted.InvokeAsync(result);
         }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
 }
 

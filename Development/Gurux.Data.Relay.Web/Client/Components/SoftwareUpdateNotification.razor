@@ -1,0 +1,47 @@
+@implements IAsyncDisposable
+@inject GXSoftwareUpdateClient Updates
+
+@if (Updates.Status.UpdateAvailable)
+{
+    <div class="alert alert-info" role="status">
+        Gurux Data Relay @Updates.Status.LatestVersion is available.
+        <a class="alert-link" href="update">View update</a>
+    </div>
+}
+
+@code {
+    private readonly CancellationTokenSource _stopping = new();
+    private Task? _polling;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Updates.Changed += OnChanged;
+        try
+        {
+            await Updates.RefreshAsync(false, _stopping.Token);
+            _polling = PollAsync(_stopping.Token);
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+    }
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task PollAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+                await Updates.RefreshAsync(false, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Updates.Changed -= OnChanged;
+        _stopping.Cancel();
+        if (_polling is not null) await _polling;
+        _stopping.Dispose();
+    }
+}

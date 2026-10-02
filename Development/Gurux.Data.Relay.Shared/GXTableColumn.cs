@@ -32,6 +32,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using Gurux.Service.Orm.Common;
+using Gurux.Service.Orm.Common.Enums;
 
 namespace Gurux.Data.Relay.Shared;
 
@@ -54,7 +55,7 @@ public sealed class GXTableColumn : IUnique<Guid>, IGXEntityMetadata
     [ConcurrencyCheck]
     public string? ConcurrencyStamp { get; set; }
 
-    [DataMember(IsRequired = true), ForeignKey(typeof(GXTable), OnDelete = Gurux.Service.Orm.Common.Enums.ForeignKeyDelete.Cascade)]
+    [DataMember(IsRequired = true), ForeignKey(typeof(GXTable), OnDelete = ForeignKeyDelete.Cascade)]
     public GXTable Table { get; set; } = new();
 
     [DataMember]

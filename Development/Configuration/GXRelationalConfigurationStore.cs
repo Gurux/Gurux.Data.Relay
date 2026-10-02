@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using System.Data;
 using Gurux.Data.Relay.Shared.Enums;
 using Gurux.Data.Relay.Shared;
@@ -37,7 +69,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
                 (Guid)property.GetValue(value)! == Guid.Empty)
                 throw new InvalidOperationException($"{typeof(T).Name}.{property.Name} requires a parent ID.");
         if (value.Id == Guid.Empty) typeof(T).GetProperty(nameof(IUnique<Guid>.Id))!.SetValue(value, Guid.NewGuid());
-        var existing = await connection.SingleOrDefaultAsync<T>(transaction, GXSelectArgs.SelectById<T>(value.Id), cancellationToken);
+        var existing = await connection.SingleOrDefaultAsync<T>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<T>(connection, ("Id", value.Id)), cancellationToken);
         if (restoringArchive)
         {
             // An explicit restore replaces the current values; backup concurrency stamps belong to another snapshot.
@@ -88,8 +120,18 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
         {
             GXDatabase database = settings.Databases[databaseIndex];
             var catalogEntry = await connection.SingleOrDefaultAsync<GXDatabase>(transaction,
-                GXSelectArgs.SelectById<GXDatabase>(database.Id), cancellationToken)
-                ?? throw new InvalidOperationException($"Database '{database.Id}' is not in the shared catalog. Add it in Databases first.");
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDatabase>(connection, ("Id", database.Id)), cancellationToken);
+
+            if (catalogEntry == null)
+            {
+                catalogEntry = await connection.SingleOrDefaultAsync<GXDatabase>(transaction,
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDatabase>(connection, ("Description", database.Description)), cancellationToken);
+                if (catalogEntry == null)
+                {
+                    throw new InvalidOperationException($"Database '{database.Id}' is not in the shared catalog. Add it in Databases first.");
+                }
+                database = catalogEntry;
+            }
             database.Description = catalogEntry.Description;
             database.ConnectionString = catalogEntry.ConnectionString;
             database.Type = catalogEntry.Type;
@@ -117,7 +159,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
                 await UpsertAsync(table.ChangeTracking);
                 await LinkAsync<GXDatabaseTableReference>(settings.Id, database.Id, table.Id, index);
                 var existingColumns = (await connection.SelectAsync<GXTableColumn>(transaction,
-                    GXSelectArgs.SelectAll<GXTableColumn>(column => column.Table == table), cancellationToken))
+                    Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXTableColumn>(connection, ("Table", table)), cancellationToken))
                     .ToDictionary(column => column.Id);
                 HashSet<Guid> retainedColumns = [];
                 foreach (string name in table.Columns.Concat(table.Keys).Distinct(StringComparer.Ordinal))
@@ -193,7 +235,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
         var tables = await ReadEntitiesAsync<GXTable>();
         var mappings = await ReadEntitiesAsync<GXDataVaultTableMapping>();
         HashSet<Guid> referenced = tables.Values.Select(t => t.ScheduleId)
-            .Concat(mappings.Values.Select(m => m.Schedule.Id)).ToHashSet();
+            .Concat(mappings.Values.Select(m => m.ScheduleId)).ToHashSet();
         foreach (var schedule in (await ReadEntitiesAsync<GXSchedule>()).Values)
             if (!referenced.Contains(schedule.Id))
                 await connection.DeleteAsync(transaction,
@@ -238,13 +280,13 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
         if (!_savedMappings.Add(mapping.Id)) return;
         if (_previousMappingEntities.TryGetValue(mapping.Id, out var previous))
         {
-            mapping.Schedule.Id = previous.Schedule.Id;
+            mapping.Schedule.Id = previous.ScheduleId;
         }
         mapping.Schedule.Settings = configurationId;
         mapping.Schedule.Database = mapping.Database;
         if (mapping.Schedule.Id == Guid.Empty) mapping.Schedule.Id = Guid.NewGuid();
+        mapping.ScheduleId = mapping.Schedule.Id;
         mapping.Schedule.Table = null;
-        mapping.Schedule = mapping.Schedule;
         mapping.SourceTable = await SaveMappingTableAsync(mapping.SourceTable, mapping.Database);
         mapping.TargetTable = await SaveMappingTableAsync(mapping.TargetTable, mapping.Database);
         await UpsertAsync(mapping);
@@ -253,7 +295,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
         for (int index = 0; index < mapping.Columns.Count; ++index)
         {
             GXDataVaultColumnMapping column = mapping.Columns[index];
-            column.SourceMappingId = mapping.Id;
+            column.Mapping = mapping.Id;
             await UpsertAsync(column);
             await LinkAsync<GXMappingColumnReference>(configurationId, mapping.Id, column.Id, index);
         }
@@ -339,23 +381,23 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
 
     private async Task<Dictionary<Guid, T>> ReadEntitiesAsync<T>() where T : IUnique<Guid>
     {
-        var select = GXSelectArgs.SelectAll<T>();
+        var select = Gurux.Data.Relay.Database.GXMetadataQueries.Select<T>(connection);
         if (typeof(T) == typeof(GXDataVaultTableMapping))
         {
-            select.Joins.AddLeftJoin<GXDataVaultTableMapping, GXTable>(m => m.SourceTable, t => t.Id);
+            select.Joins.AddLeftJoin<GXDataVaultTableMapping, GXTable>(mapping => mapping.SourceTable, table => table.Id);
             select.Columns.Add<GXTable>();
         }
         if (typeof(T) == typeof(GXTableColumn))
         {
-            select.Joins.AddLeftJoin<GXTableColumn, GXTable>(c => c.Table, t => t.Id);
+            select.Joins.AddLeftJoin<GXTableColumn, GXTable>(column => column.Table, table => table.Id);
             select.Columns.Add<GXTable>();
         }
         var result = (await connection.SelectAsync<T>(transaction, select, cancellationToken)).ToDictionary(v => v.Id);
         if (typeof(T) == typeof(GXDataVaultTableMapping))
         {
             // Two properties reference GXTable; load each relationship independently.
-            var targets = GXSelectArgs.SelectAll<GXDataVaultTableMapping>();
-            targets.Joins.AddLeftJoin<GXDataVaultTableMapping, GXTable>(m => m.TargetTable, t => t.Id);
+            var targets = Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDataVaultTableMapping>(connection);
+            targets.Joins.AddLeftJoin<GXDataVaultTableMapping, GXTable>(mapping => mapping.TargetTable, table => table.Id);
             targets.Columns.Add<GXTable>();
             foreach (var mapping in await connection.SelectAsync<GXDataVaultTableMapping>(transaction, targets, cancellationToken))
                 ((GXDataVaultTableMapping)(object)result[mapping.Id]).TargetTable = mapping.TargetTable;
@@ -364,7 +406,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
     }
 
     private async Task<List<T>> ReadReferencesAsync<T>(Guid configurationId) where T : class, IGXConfigurationReference
-        => await connection.SelectAsync<T>(transaction, GXSelectArgs.SelectAll<T>(r => r.ConfigurationId == configurationId), cancellationToken);
+        => await connection.SelectAsync<T>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<T>(connection, ("ConfigurationId", configurationId)), cancellationToken);
 
     private static List<T> Resolve<T, TReference>(IEnumerable<TReference> references, Guid owner, Dictionary<Guid, T> entities)
         where TReference : IGXConfigurationReference
@@ -374,7 +416,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
     public async Task<GXSettings> LoadAsync(Guid settingsId)
     {
         GXSettings settings = await connection.SingleOrDefaultAsync<GXSettings>(transaction,
-            GXSelectArgs.SelectAll<GXSettings>(s => s.Id == settingsId), cancellationToken)
+            Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXSettings>(connection, ("Id", settingsId)), cancellationToken)
             ?? throw new InvalidOperationException("Configuration payload reference is missing.");
         var databases = await ReadEntitiesAsync<GXDatabase>();
         var tables = await ReadEntitiesAsync<GXTable>();
@@ -398,10 +440,7 @@ internal sealed class GXRelationalConfigurationStore(GXDbConnection connection, 
         {
             mapping.SourceTable = tables[mapping.SourceTable!.Id];
             mapping.TargetTable = tables[mapping.TargetTable!.Id];
-            if (mapping.Schedule is GXSchedule s && s.Id != Guid.Empty)
-            {
-                mapping.Schedule = schedules[s.Id];
-            }
+            mapping.Schedule = schedules[mapping.ScheduleId];
             mapping.Columns = Resolve(mappingColumnLinks, mapping.Id, mappingColumns);
         }
         settings.Databases = Resolve(databaseLinks, settingsId, databases);

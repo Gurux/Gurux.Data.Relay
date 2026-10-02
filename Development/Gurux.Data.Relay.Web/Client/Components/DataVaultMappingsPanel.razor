@@ -31,7 +31,6 @@
 //---------------------------------------------------------------------------
 *@
 
-@inject GXAdminApiClient Api
 @using Gurux.Data.Relay.Configuration
 @using Gurux.Data.Relay.Web.Client.Enums
 @using Gurux.UI.Components.Panel
@@ -39,21 +38,31 @@
 @using Gurux.Data.Relay.Shared.Enums
 @using Gurux.Data.Relay.Shared
 @using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Gurux.UI.Components.Enums
+@inject IGXProgress Progress
+@inject IGXNotificationService NotificationService
+@inject GXAdminApiClient Api
 
-<GXLiveView Mode="datavault" IsEditing="@(() => _action != CrudAction.None || _addType != null || _creatingMart)" OnChanged="LoadAsync">
+<GXLiveView Mode="datavault" IsEditing="@(() => _action != CrudAction.None || _addType != null || _creatingMart || _dataTableName != null)" OnChanged="LoadAsync">
+
+    @if (_dataTableName is not null)
+    {
+        <div class="table-structure-dialog">
+            <GXValidationDialog Model="@this" Title="@($"Data: {_dataTableName}")" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseData">
+                <ModeTableDataPanel @key="(_dataDatabaseId, _dataTableName)" Mode="datavault" InitialDatabaseId="_dataDatabaseId" InitialTable="@_dataTableName" />
+            </GXValidationDialog>
+        </div>
+    }
 
     @if (_action == CrudAction.Delete && _activeMapping != null)
     {
         <GXValidationDialog Model="@_draft" Title="Delete mapping" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
-            @if (!string.IsNullOrWhiteSpace(_message))
-            {
-                <div class="alert alert-danger" role="alert">@_message</div>
-            }
+
             <p>Delete this mapping?</p>
             <p><strong>Source table:</strong> @_activeMapping.SourceTable?.Name</p>
             <p><strong>Target table:</strong> @_activeMapping.TargetTable?.Name</p>
             <p><strong>Database:</strong> @GetMappingDatabaseLabel(_activeMapping)</p>
-            <fieldset disabled="@_busy">
+            <fieldset disabled="@Progress.IsBusy">
                 <button type="button" class="btn btn-danger" @onclick="DeleteAsync">Delete mapping</button>
                 <button type="button" class="btn btn-secondary" @onclick="CloseMappingDialog">Cancel</button>
             </fieldset>
@@ -62,17 +71,21 @@
     @if (_columnDraft is { } editedColumn)
     {
         <GXValidationDialog Model="@editedColumn" Title="@(_deleteColumn ? "Delete column" : "Edit column")" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
-            @if (!string.IsNullOrWhiteSpace(_message))
-            {
-                <div class="alert alert-danger" role="alert">@_message</div>
-            }
-            <fieldset disabled="@_busy">
+
+            <fieldset disabled="@Progress.IsBusy">
                 @if (_deleteColumn)
                 {
                     <p>Delete mapping for column @editedColumn.TargetColumn?</p>
                 }
                 else
                 {
+                    @if (_draft.ObjectType == DataVaultObjectType.InformationMart)
+                    {
+                        <label>Source mapping</label>
+                        <GXInputDropdown TValue="Guid?" Items="MartSourceMappingIds" @bind-Value="editedColumn.SourceMappingId" @bind-Value:after="LoadColumnChoicesAsync">
+                            <Template Context="id">@SourceMappingLabel(id, "Select source mapping")</Template>
+                        </GXInputDropdown>
+                    }
                     <label>Source table</label>
                     <p>@SourceMappingLabel(editedColumn.SourceMappingId, _draft.SourceTable.Name)</p>
                     <label>Source column</label>
@@ -109,11 +122,8 @@
     @if (_columnDraft == null && (_action is CrudAction.Create or CrudAction.Update))
     {
         <GXValidationDialog Model="@_draft" Title="@((_action == CrudAction.Create ? "Add " : "Modify ") + (_stageScheduleOnly ? "Stage" : _draft.ObjectType.ToString()))" HelpTopic="@(_stageScheduleOnly ? "add-stage" : null)" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseMappingDialog">
-            @if (!string.IsNullOrWhiteSpace(_message))
-            {
-                <div class="alert alert-danger" role="alert">@_message</div>
-            }
-            <fieldset disabled="@_busy">
+
+            <fieldset disabled="@Progress.IsBusy">
                 @if (IsMappedMart)
                 {
                     <p>Mart: @_draft.TargetTable.Name — root Hub: @_draft.SourceTable.Name</p>
@@ -122,7 +132,15 @@
                         <tbody>
                             @foreach (var column in _draft.Columns)
                             {
-                                <tr><td>@SourceMappingLabel(column.SourceMappingId, _draft.SourceTable.Name)</td><td>@column.SourceColumn</td><td>@column.TargetColumn</td><td>@column.Aggregation</td></tr>
+                                <tr>
+                                    <td>@SourceMappingLabel(column.SourceMappingId, _draft.SourceTable.Name)</td>
+                                    <td>@column.SourceColumn</td>
+                                    <td>
+                                        <DropdownSearch class="form-control" Items="_targetColumns" ShowItemsWhenEmpty="true" @bind-Value="column.TargetColumn" />
+                                        <ValidationMessage For="@(() => column.TargetColumn)" />
+                                    </td>
+                                    <td>@column.Aggregation</td>
+                                </tr>
                             }
                         </tbody>
                     </table>
@@ -205,6 +223,23 @@
                             }
                             <button type="button" class="btn btn-secondary" @onclick="() => _draft.Columns.Add(new())">Add column</button>
                         }
+                        else if (_action == CrudAction.Update && _draft.ObjectType != DataVaultObjectType.Staging)
+                        {
+                            <p>Update the target column for each existing binding.</p>
+                            @foreach (var column in _draft.Columns)
+                            {
+                                <div class="border rounded p-3 mb-3" @key="column">
+                                    <label>Source column</label>
+                                    <p>@column.SourceColumn</p>
+                                    <label>Target column</label>
+                                    <DropdownSearch class="form-control" Items="_targetColumns" ShowItemsWhenEmpty="true" @bind-Value="column.TargetColumn" />
+                                    <ValidationMessage For="@(() => column.TargetColumn)" />
+                                    <label>Role</label>
+                                    <GXInputDropdown @bind-Value="column.Role" />
+                                    <ValidationMessage For="@(() => column.Role)" />
+                                </div>
+                            }
+                        }
                         <details class="mt-3">
                             <summary>Tables mapped from this Stage</summary>
                             @foreach (var mapping in RelatedVaultTables)
@@ -247,13 +282,10 @@
 
     <section class="panel">
         <h2>@Title</h2>
-        @if (!string.IsNullOrWhiteSpace(_message))
-        {
-            <p class="notice" role="alert">@_message</p>
-        }
+
         <Panel Height="fill">
             <PanelItem Height="fill" Width="50%" Id="vault-mappings">
-                <fieldset disabled="@(_busy || _creatingMart || _addType != null || _action != CrudAction.None)">
+                <fieldset disabled="@(Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None)">
                     <div class="actions-row">
                         <label>Database</label>
                         <GXInputDropdown TValue="GXDatabase" Items="_databases"
@@ -309,6 +341,7 @@
                                 {
                                     <ContextMenuItem Text="Add Mart" Image="oi oi-plus" OnClick="OpenMartFromStage" />
                                 }
+                                <ContextMenuItem Text="Data" Image="oi oi-grid-three-up" OnClick="OpenData" />
                                 <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => EditAsync(_activeMapping)" />
                                 <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="() => ConfirmDelete(_activeMapping)" />
                             </MenuContent>
@@ -331,7 +364,7 @@
                         <p><strong>Target table:</strong> @selected.TargetTable.Name</p>
                         @if (selected.ObjectType == DataVaultObjectType.Staging)
                         {
-                            <button type="button" class="btn btn-primary" disabled="@(_busy || _creatingMart)" @onclick="OpenMartFromStage">Add Mart</button>
+                            <button type="button" class="btn btn-primary" disabled="@(Progress.IsBusy || _creatingMart)" @onclick="OpenMartFromStage">Add Mart</button>
                         }
                         @if (HasOwnSchedule(selected) && selected.Schedule != null)
                         {
@@ -360,12 +393,12 @@
                         {
                             @if (_stageSchemaLoading)
                             {
-                                <p role="status">Loading table columns…</p>
+
                             }
                             else if (_stageSchemaError is not null)
                             {
 
-                                <p class="alert alert-danger" role="alert">@_stageSchemaError</p>
+
                             }
                             else if (_stageSchema is not null)
                             {
@@ -419,7 +452,7 @@
                         }
                         @if (selected.ObjectType == DataVaultObjectType.InformationMart && selected.Columns.Any(c => c.SourceMappingId.HasValue))
                         {
-                            <button type="button" class="btn btn-secondary" disabled="@(_busy || _creatingMart || _addType != null)" @onclick="() => RefreshMartAsync(selected)">Refresh Mart</button>
+                            <button type="button" class="btn btn-secondary" disabled="@(Progress.IsBusy || _creatingMart || _addType != null)" @onclick="() => RefreshMartAsync(selected)">Refresh Mart</button>
                         }
                     }
                     else
@@ -434,6 +467,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "datavaultmappingspanel-" + Guid.NewGuid().ToString("N");
     private TimeSpan? DailyScheduleTime
     {
@@ -472,48 +506,64 @@
     private bool IsMappedMart => _draft.ObjectType == DataVaultObjectType.InformationMart && _draft.Columns.Any(c => c.SourceMappingId.HasValue);
     private string SourceMappingLabel(Guid? id, string sourceTable) => id == null
         ? sourceTable
-        : _rows.FirstOrDefault(m => m.Id == id)?.TargetTable.Name ?? id.ToString()!;
+        : _rows.FirstOrDefault(m => m.Id == id) is { } mapping
+            ? $"{mapping.ObjectType}: {mapping.TargetTable.Name}"
+            : id.ToString()!;
+    private Guid?[] MartSourceMappingIds => SelectedDatabaseMappings
+        .Where(mapping => mapping.ObjectType != DataVaultObjectType.InformationMart)
+        .Select(mapping => (Guid?)mapping.Id).ToArray();
     private async Task RefreshMartAsync(GXDataVaultTableMapping mapping)
     {
-        if (_busy) return;
-        _busy = true;
+        if (Progress.IsBusy) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             var database = _databases.FirstOrDefault(d => d.Id == mapping.Database)
                 ?? throw new InvalidOperationException("Select a mapped database.");
             int rows = await Api.RefreshMartAsync(database.Id, mapping.Id, CancellationToken.None);
-            _message = $"Refreshed {mapping.TargetTable.Name}: {rows} rows.";
+            NotificationService.SetMessage(ref _message, $"Refreshed {mapping.TargetTable.Name}: {rows} rows.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
 
     private async Task StartSelectedMappingAsync()
     {
-        if (_busy || _action != CrudAction.None || _creatingMart || _addType != null || _activeMapping == null) return;
+        if (Progress.IsBusy || _action != CrudAction.None || _creatingMart || _addType != null || _activeMapping == null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         var mapping = _activeMapping;
-        _busy = true;
-        _message = $"Running {mapping.TargetTable.Name}...";
         try
         {
             int rows = await Api.StartDataVaultMappingAsync(mapping.Id, CancellationToken.None);
-            _message = $"Completed {mapping.TargetTable.Name}: {rows} rows.";
+            NotificationService.SetMessage(ref _message, $"Completed {mapping.TargetTable.Name}: {rows} rows.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
     [Inject] public IGXTopMenu TopMenu { get; set; } = default!;
     private DataVaultObjectType? _addType;
     private bool _creatingMart;
+    private Guid _dataDatabaseId;
+    private string? _dataTableName;
+
+    private void OpenData()
+    {
+        if (_activeMapping?.TargetTable is not { Name: { Length: > 0 } tableName }) return;
+        _dataDatabaseId = _activeMapping.Database;
+        _dataTableName = tableName;
+    }
+
+    private void CloseData() => _dataTableName = null;
+
     private bool CanAddMartFromSelection => SelectedDatabaseMappings.Any(mapping =>
         mapping.ObjectType is DataVaultObjectType.Staging or DataVaultObjectType.Hub or DataVaultObjectType.Satellite &&
         string.Equals(mapping.TargetTable.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase));
     private void OpenMartDialog()
     {
-        if (_busy || _action != CrudAction.None || _addType != null) return;
+        if (Progress.IsBusy || _action != CrudAction.None || _addType != null) return;
         if (Active == null || !CanAddMartFromSelection)
         {
-            _message = "Select a Stage, Hub or Satellite mapping before adding a Mart.";
+            NotificationService.SetMessage(ref _message, "Select a Stage, Hub or Satellite mapping before adding a Mart.", _notificationKey + "_message", NotificationLevel.Information);
             return;
         }
         _creatingMart = true;
@@ -528,7 +578,7 @@
     private async Task MartCreatedAsync(GXCreateVaultTableResult result)
     {
         _creatingMart = false;
-        _message = result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.";
+        NotificationService.SetMessage(ref _message, result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.", _notificationKey + "_message", result.MappingError is null ? NotificationLevel.Success : NotificationLevel.Error);
         await LoadAsync();
     }
     private string? _selectedSourceTable;
@@ -555,8 +605,8 @@
     private string? _vaultSource;
     private Task OpenAddDialog(DataVaultObjectType type)
     {
-        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None) return Task.CompletedTask;
-        if (Active == null) { _message = "Select a configured database."; return Task.CompletedTask; }
+        if (Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None) return Task.CompletedTask;
+        if (Active == null) { NotificationService.SetMessage(ref _message, "Select a configured database.", _notificationKey + "_message", NotificationLevel.Information); return Task.CompletedTask; }
         var selected = _activeMapping != null && SelectedDatabaseMappings.Contains(_activeMapping) &&
             string.Equals(_activeMapping.TargetTable.Name, _selectedSourceTable, StringComparison.OrdinalIgnoreCase)
             ? _activeMapping
@@ -568,14 +618,14 @@
         _vaultSource = stage?.TargetTable.Name ?? (useHubSource ? selected!.SourceTable.Name :
             _tableChoices.Contains(_selectedSourceTable ?? "", StringComparer.OrdinalIgnoreCase) ? _selectedSourceTable : null);
         _addType = type;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         return Task.CompletedTask;
     }
     private void CloseVaultDialog() => _addType = null;
     private async Task VaultMappingCreatedAsync(GXCreateVaultTableResult result)
     {
         _addType = null;
-        _message = result.MappingError ?? $"Saved mapping for {result.TableName}.";
+        NotificationService.SetMessage(ref _message, result.MappingError ?? $"Saved mapping for {result.TableName}.", _notificationKey + "_message", result.MappingError is null ? NotificationLevel.Success : NotificationLevel.Error);
         await LoadAsync();
     }
     private static bool IsKeyColumn(DataVaultColumnRole role) => role is
@@ -583,12 +633,12 @@
 
     private void CloseMappingDialog()
     {
-        if (!_busy) CancelEdit();
+        if (!Progress.IsBusy) CancelEdit();
     }
     private IEnumerable<GXDataVaultTableMapping> SelectedDatabaseMappings => _rows.Where(mapping => mapping.Database == Active?.Id);
     private async Task SelectMapping(GXDataVaultTableMapping mapping)
     {
-        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || !VisibleMappings.Contains(mapping)) return;
+        if (Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None || !VisibleMappings.Contains(mapping)) return;
         _activeColumn = null;
         _activeMapping = mapping;
         ShowTableMenu(mapping.TargetTable.Name);
@@ -600,14 +650,16 @@
     private int _stageSchemaRequest;
     private async Task LoadStageSchemaAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_stageSchemaError");
+
         int request = ++_stageSchemaRequest;
         _stageSchema = null;
-        _stageSchemaError = null;
+        NotificationService.SetMessage(ref _stageSchemaError, null, _notificationKey + "_stageSchemaError", NotificationLevel.Error);
         _stageSchemaLoading = false;
         var mapping = _activeMapping;
         if (mapping?.ObjectType != DataVaultObjectType.Staging) return;
         var database = _databases.FirstOrDefault(d => d.Id == mapping.Database);
-        if (database is null) { _stageSchemaError = "The Stage database was not found."; return; }
+        if (database is null) { NotificationService.SetMessage(ref _stageSchemaError, "The Stage database was not found.", _notificationKey + "_stageSchemaError", NotificationLevel.Error); return; }
         _stageSchemaLoading = true;
         try
         {
@@ -616,7 +668,7 @@
         }
         catch (Exception ex)
         {
-            if (request == _stageSchemaRequest && ReferenceEquals(mapping, _activeMapping)) _stageSchemaError = ex.Message;
+            if (request == _stageSchemaRequest && ReferenceEquals(mapping, _activeMapping)) NotificationService.SetMessage(ref _stageSchemaError, ex.Message, _notificationKey + "_stageSchemaError", NotificationLevel.Error);
         }
         finally { if (request == _stageSchemaRequest) _stageSchemaLoading = false; }
     }
@@ -624,6 +676,8 @@
     private int _columnRequest;
     private async Task LoadColumnChoicesAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         int request = ++_columnRequest;
         _sourceColumns = [];
         _targetColumns = [];
@@ -639,7 +693,7 @@
         }
         catch (Exception ex)
         {
-            if (request == _columnRequest) _message = $"Could not load target columns: {ex.Message}";
+            if (request == _columnRequest) NotificationService.SetMessage(ref _message, $"Could not load target columns: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
         try
         {
@@ -649,6 +703,8 @@
                 (draft.ObjectType == DataVaultObjectType.InformationMart
                     ? mapping.ObjectType != DataVaultObjectType.Staging && mapping.ObjectType != DataVaultObjectType.InformationMart
                     : mapping.ObjectType == DataVaultObjectType.Staging)).ToList();
+            if (draft.ObjectType == DataVaultObjectType.InformationMart && _columnDraft?.SourceMappingId is Guid sourceMappingId)
+                sourceMappings = SelectedDatabaseMappings.Where(mapping => mapping.Id == sourceMappingId).ToList();
             if (draft.ObjectType == DataVaultObjectType.Staging)
             {
                 if (!string.IsNullOrWhiteSpace(draft.SourceTable.Name))
@@ -663,7 +719,7 @@
                         sources.AddRange(draft.Columns.Select(column => column.SourceColumn)
                             .Where(name => !string.IsNullOrWhiteSpace(name)));
                         if (sources.Count == 0 && request == _columnRequest)
-                            _message = "The incoming source table is not in this database and has no configured source columns.";
+                            NotificationService.SetMessage(ref _message, "The incoming source table is not in this database and has no configured source columns.", _notificationKey + "_message", NotificationLevel.Information);
                     }
                 }
             }
@@ -679,10 +735,10 @@
                     string sourceTable = _tableChoices.Contains(mapping.TargetTable.Name, StringComparer.OrdinalIgnoreCase)
                         ? mapping.TargetTable.Name : mapping.SourceTable.Name;
                     var schema = await Api.GetColumnsAsync(database, sourceTable, CancellationToken.None);
-                    // The scheduler resolves logical source names through each mapping.
+                    // MART plans resolve the physical output columns of the selected mapping.
                     sources.AddRange(mapping.Columns.Where(column => schema.Columns.Any(actual =>
                         string.Equals(actual.Name, column.TargetColumn, StringComparison.OrdinalIgnoreCase)))
-                        .Select(column => column.SourceColumn).Where(name => !string.IsNullOrWhiteSpace(name)));
+                        .Select(column => column.TargetColumn).Where(name => !string.IsNullOrWhiteSpace(name)));
                 }
             }
             if (request != _columnRequest) return;
@@ -690,7 +746,7 @@
         }
         catch (Exception ex)
         {
-            if (request == _columnRequest) _message = $"Could not load table columns: {ex.Message}";
+            if (request == _columnRequest) NotificationService.SetMessage(ref _message, $"Could not load table columns: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
     }
 
@@ -717,6 +773,8 @@
         string.Equals(mapping.SourceTable?.Name, _draft.SourceTable?.Name, StringComparison.OrdinalIgnoreCase));
     private async Task LoadTableChoicesAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         int request = ++_tableRequest;
         var database = Active;
         if (_action == CrudAction.None && _activeMapping != null && !SelectedDatabaseMappings.Contains(_activeMapping))
@@ -734,7 +792,7 @@
                 if (request != _tableRequest || Active != database) return;
                 _tableChoices = tables;
             }
-            catch (Exception ex) { if (request == _tableRequest) _message = ex.Message; }
+            catch (Exception ex) { if (request == _tableRequest) NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
         }
         if (request == _tableRequest && _action != CrudAction.None) await LoadColumnChoicesAsync();
     }
@@ -750,17 +808,16 @@
     private string? _message;
     private string? _sourceFilter;
     private string? _targetFilter;
-    private bool _busy;
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
     private async Task LoadAsync()
     {
-        if (_busy || _creatingMart) return;
-        _busy = true;
+        if (Progress.IsBusy || _creatingMart) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try { await RefreshMappingsAsync(); }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
 
     private async Task RefreshMappingsAsync()
@@ -828,13 +885,22 @@
 
     private async Task EditColumnAsync(bool delete)
     {
-        if (_activeColumn == null || _activeMapping == null || _busy || _action != CrudAction.None) return;
+        if (_activeColumn == null || _activeMapping == null || Progress.IsBusy || _action != CrudAction.None) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         Guid columnId = _activeColumn.Id;
         await EditAsync(_activeMapping);
         if (_action != CrudAction.Update) return;
         _columnDraft = _draft.Columns.FirstOrDefault(c => c.Id == columnId);
         _deleteColumn = delete;
-        if (_columnDraft == null) { CancelEdit(); _message = "The column was not found. Refresh the mapping."; }
+        if (_columnDraft == null) { CancelEdit(); NotificationService.SetMessage(ref _message, "The column was not found. Refresh the mapping.", _notificationKey + "_message", NotificationLevel.Information); }
+        else if (_draft.ObjectType == DataVaultObjectType.InformationMart && _columnDraft.SourceMappingId is null &&
+            SelectedDatabaseMappings.FirstOrDefault(mapping => mapping.ObjectType == DataVaultObjectType.Staging &&
+                string.Equals(mapping.TargetTable.Name, _draft.SourceTable.Name, StringComparison.OrdinalIgnoreCase)) is { } stage)
+        {
+            _columnDraft.SourceMappingId = stage.Id;
+            await LoadColumnChoicesAsync();
+        }
         else if (_columnDraft.SourceMappingId is Guid sourceId && _rows.FirstOrDefault(m => m.Id == sourceId) is { } source && Active != null)
         {
             try
@@ -842,13 +908,13 @@
                 var schema = await Api.GetColumnsAsync(Active, source.TargetTable.Name, CancellationToken.None);
                 _sourceColumns = schema.Columns.Select(c => c.Name).ToArray();
             }
-            catch (Exception ex) { _message = ex.Message; }
+            catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
         }
     }
 
     private async Task SaveColumnAsync()
     {
-        if (_busy || _columnDraft == null) return;
+        if (Progress.IsBusy || _columnDraft == null) return;
         var column = _columnDraft;
         int index = _draft.Columns.IndexOf(column);
         if (_deleteColumn) _draft.Columns.Remove(column);
@@ -866,9 +932,10 @@
 
     private async Task EditAsync(GXDataVaultTableMapping? mapping)
     {
-        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
-        _busy = true;
-        _message = null;
+        if (Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         try
         {
             Guid id = mapping.Id;
@@ -891,8 +958,7 @@
             _action = CrudAction.Update;
             _table = null;
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
 
     private bool _stageScheduleOnly;
@@ -917,6 +983,8 @@
     }
     private async Task LoadStageTablesAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         int request = ++_stageTableRequest;
         var database = _stageDatabase;
         _stageTables = [];
@@ -927,14 +995,14 @@
             if (request == _stageTableRequest && _stageScheduleOnly && _stageDatabase == database)
                 _stageTables = tables;
         }
-        catch (Exception ex) { if (request == _stageTableRequest && _stageScheduleOnly) _message = ex.Message; }
+        catch (Exception ex) { if (request == _stageTableRequest && _stageScheduleOnly) NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
     private async Task StartAddStage()
     {
-        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None) return;
+        if (Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None) return;
         if (Active == null)
         {
-            _message = "Select a configured database before adding a Stage schedule.";
+            NotificationService.SetMessage(ref _message, "Select a configured database before adding a Stage schedule.", _notificationKey + "_message", NotificationLevel.Information);
             return;
         }
         var table = _activeMapping?.TargetTable;
@@ -954,40 +1022,41 @@
         _stageScheduleOnly = true;
         _stageDatabase = Active;
         _action = CrudAction.Create;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         _table = null;
         await LoadStageTablesAsync();
     }
 
     private void ConfirmDelete(GXDataVaultTableMapping? mapping)
     {
-        if (_busy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
+        if (Progress.IsBusy || _creatingMart || _addType != null || _action != CrudAction.None || mapping == null) return;
         _activeMapping = mapping;
         _editingId = mapping.Id;
         _action = CrudAction.Delete;
         _table = null;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
     }
 
     private async Task DeleteAsync()
     {
-        if (_busy || _action != CrudAction.Delete || _editingId == null) return;
-        _busy = true;
+        if (Progress.IsBusy || _action != CrudAction.Delete || _editingId == null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             await Api.DeleteDataVaultMappingAsync(_editingId.Value, CancellationToken.None);
             CancelEdit();
-            _message = "Mapping deleted.";
+            NotificationService.SetMessage(ref _message, "Mapping deleted.", _notificationKey + "_message", NotificationLevel.Success);
             await RefreshMappingsAsync();
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
 
     private async Task SaveMappingAsync()
     {
-        if (_busy || _action is not (CrudAction.Create or CrudAction.Update)) return;
-        _busy = true;
+        if (Progress.IsBusy || _action is not (CrudAction.Create or CrudAction.Update)) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             GXDatabase? database = _stageScheduleOnly ? _stageDatabase : Active;
@@ -1010,11 +1079,10 @@
             else if (_activeMapping != null) _activeMapping.Database = database.Id;
             CancelEdit();
             Active = database;
-            _message = "Mapping saved.";
+            NotificationService.SetMessage(ref _message, "Mapping saved.", _notificationKey + "_message", NotificationLevel.Success);
             await RefreshMappingsAsync();
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
     }
 
     private void CancelEdit()

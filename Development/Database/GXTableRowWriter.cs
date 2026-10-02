@@ -1,3 +1,37 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using E = System.Linq.Expressions.Expression;
+using Gurux.Service.Orm;
 using System.Data.Common;
 using System.Text.Json;
 using Gurux.Data.Relay.Configuration;
@@ -7,7 +41,7 @@ using Gurux.Service.Orm.Enums;
 
 namespace Gurux.Data.Relay.Database;
 
-/// <summary>Writes individual rows in existing tables using schema validation and parameterized commands.</summary>
+/// <summary>Writes individual rows in existing tables using schema validation and Gurux.Service execution methods.</summary>
 public sealed class GXTableRowWriter(IGXDatabaseConnectionFactory connections, IGXDatabaseMetadataService metadata)
 {
     /// <summary>Inserts a row. Omit generated columns and columns whose database defaults should apply.</summary>
@@ -46,20 +80,10 @@ public sealed class GXTableRowWriter(IGXDatabaseConnectionFactory connections, I
             if (primaryKey.Count == 0 || !primaryKey.SetEquals(keys.Keys))
                 throw new ArgumentException("Supply every primary-key column and no other columns in keys.");
         }
-        string Quote(string name) => database.Type switch
-        {
-            DatabaseType.MSSQL => "[" + name.Replace("]", "]]") + "]",
-            DatabaseType.MySQL or DatabaseType.MariaDB => "`" + name.Replace("`", "``") + "`",
-            _ => "\"" + name.Replace("\"", "\"\"") + "\""
-        };
-        string table = string.Join(".", tableName.Split('.').Select(Quote));
         await using var connection = connections.CreateConnection(database);
         await connection.OpenAsync(token);
         await using var transaction = await connection.BeginTransactionAsync(token);
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-
-        string Parameter(string name, JsonElement value, bool key)
+        object? Parameter(string name, JsonElement value, bool key)
         {
             var column = schema.Columns.SingleOrDefault(column => column.Name == name)
                 ?? throw new ArgumentException($"Unknown column '{name}'.");
@@ -67,22 +91,34 @@ public sealed class GXTableRowWriter(IGXDatabaseConnectionFactory connections, I
                 throw new ArgumentException($"Column '{name}' is generated or is an immutable primary key.");
             if (value.ValueKind == JsonValueKind.Null && (key || !column.IsNullable))
                 throw new ArgumentException($"Column '{name}' cannot be null.");
-            string placeholder = database.Type is DatabaseType.DB2 or DatabaseType.SapHana ? "?"
-                : GXSqlParameterHelper.GetPlaceholder(database.Type, $"p{command.Parameters.Count}");
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = $"p{command.Parameters.Count}";
-            parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(database.Type, ConvertValue(column, value)) ?? DBNull.Value;
-            command.Parameters.Add(parameter);
-            return placeholder;
+            return ConvertValue(column, value);
         }
-
-        var assignments = values?.Select(pair => (Column: Quote(pair.Key), Value: Parameter(pair.Key, pair.Value, false))).ToArray();
-        string where = keys == null ? "" : " WHERE " + string.Join(" AND ", keys.Select(pair => $"{Quote(pair.Key)} = {Parameter(pair.Key, pair.Value, true)}"));
-        command.CommandText = keys == null
-            ? $"INSERT INTO {table} ({string.Join(", ", assignments!.Select(item => item.Column))}) VALUES ({string.Join(", ", assignments.Select(item => item.Value))})"
-            : values == null ? $"DELETE FROM {table}{where}"
-            : $"UPDATE {table} SET {string.Join(", ", assignments!.Select(item => $"{item.Column} = {item.Value}"))}{where}";
-        int affected = await command.ExecuteNonQueryAsync(token);
+        var assignments = values?.Select(pair => (
+            Column: schema.Columns.Single(column => column.Name == pair.Key),
+            Value: Parameter(pair.Key, pair.Value, false))).ToArray();
+        E? predicate = null;
+        if (keys != null)
+        {
+            foreach (var pair in keys)
+            {
+                var column = schema.Columns.Single(column => column.Name == pair.Key);
+                var value = Parameter(pair.Key, pair.Value, true);
+                System.Linq.Expressions.Expression<Func<GXColumnSchema, bool>> condition = _ => column == value;
+                predicate = predicate == null ? condition.Body : E.AndAlso(predicate, condition.Body);
+            }
+        }
+        GXUpdateArgs? update = null;
+        if (keys != null && assignments != null)
+        {
+            update = GXUpdateArgs.Update(assignments);
+            update.Where.Set(predicate);
+        }
+        var databaseConnection = new GXDbConnection(connection);
+        int affected = keys == null
+            ? await databaseConnection.InsertAsync(transaction, GXInsertArgs.Insert(assignments!), token)
+            : values == null
+                ? await databaseConnection.DeleteAsync(transaction, GXDeleteArgs.Delete(schema, predicate!), token)
+                : await databaseConnection.UpdateAsync(transaction, update!, token);
         if (affected is < 0 or > 1) throw new InvalidOperationException("The operation did not affect exactly one row; changes were rolled back.");
         await transaction.CommitAsync(token);
         return affected;

@@ -40,7 +40,7 @@ The help icon opens the section for the active page or editor tab. The navigatio
 | Data Vault editors | [Add Stage](#add-stage), [Add Hub](#add-hub), [Add Link](#add-link), [Add Satellite](#add-satellite), [Add Reference](#add-reference), [Add Mart](#add-mart), [Schedules](#data-vault-schedules) |
 | Settings | [Configuration database](#configuration-database), [Import / Export](#import-and-export-all-settings), [Automatic column mappings](#settings--automatic-column-mappings) |
 | CORS settings | [Client](#client-cors), [Server](#server-cors), [Data Vault](#data-vault-cors) |
-| Update | [Configuration table updates](#update-configuration-tables) |
+| Update | [Software updates](#software-updates), [Configuration table updates](#update-configuration-tables) |
 
 Select **Client**, **Server**, or **Data Vault** from the navigation menu. The modes select databases by ID from one shared catalog. Tables, mappings, transports and runtime state remain mode-specific.
 
@@ -387,7 +387,7 @@ The minimum logging levels and REST, Swagger, and CORS settings work per mode in
 
 The application's shared **Settings** page separately defines the database type and connection string used to store configuration data. **Test** tests the connection and **Save** saves the setting.
 
-The **Update** page updates the configuration database table structures.
+The **Update** page checks for software releases and updates the configuration database table structures.
 
 These shared pages do not change the connection of an individual Client, Server, or Data Vault database.
 
@@ -421,7 +421,15 @@ Select **Server CORS** to configure browser access to the Server API. The contro
 
 Select **Data Vault CORS** to configure browser access to the Data Vault API. The controls work as described in [Client CORS](#client-cors), but save to Data Vault settings independently.
 
+## Software updates
+
+Open **Update** (`/update`) to view the installed software version, the latest release, and the last successful check. **Check for updates** starts a new check; **View release and downloads** opens the GitHub release page. A notification appears above the page content when a newer version is available. Updates are not installed automatically.
+
+The server uses the `Gurux.Updater.Net` NuGet package to check `Gurux/Gurux.Data.Relay` GitHub releases at startup and every six hours. Browsers refresh the shared result every minute. Failed checks show a warning on the Update page and retain the last successful result. The installed version comes from the web server assembly's informational version; release builds should set `Version` to match their release tag (for example, `dotnet publish -p:Version=1.2.3`).
+
+API: `GET /api/update/software` returns cached status; `POST /api/update/software/check` checks for a release. These endpoints do not download or install software.
+
 ## Update configuration tables
 
-Address: `/update`. The **Update** navigation item appears when configuration table changes are pending. Review the listed tables and changes, then select **Update tables**. The page reports the result and reloads the pending changes. Apply these updates before saving settings that require the newer configuration schema.
+Address: `/update`. The **Update** navigation item shows a warning badge when configuration table changes are pending. Review the listed tables and changes, then select **Update tables**. The page reports the result and reloads the pending changes. Apply these updates before saving settings that require the newer configuration schema.
 

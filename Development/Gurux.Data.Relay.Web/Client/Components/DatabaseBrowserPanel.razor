@@ -32,7 +32,9 @@
 *@
 
 @using Gurux.Data.Relay.Shared
+@using Gurux.UI.Components.Enums
 @inject GXAdminApiClient Api
+@inject IGXNotificationService NotificationService
 
 <GXLiveView Mode="@Mode" OnChanged="LoadSettingsAsync">
 
@@ -45,10 +47,7 @@
             <button class="btn btn-outline-secondary" @onclick="LoadTablesAsync" disabled="@(!_databases.Any())">Load tables</button>
         </div>
 
-        @if (!string.IsNullOrWhiteSpace(_message))
-        {
-            <p class="notice">@_message</p>
-        }
+
 
         <div class="row mt-3">
             <div class="col-md-4">
@@ -98,6 +97,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private static string FormatDatabaseOption(int index) => $"Database {index}";
 
 
@@ -129,7 +129,7 @@
             {
                 _selectedIndex = 0;
             }
-            _message = $"Loaded {_databases.Count} configured databases.";
+            NotificationService.SetMessage(ref _message, $"Loaded {_databases.Count} configured databases.", _notificationKey + "_message", NotificationLevel.Information);
         }
     }
 
@@ -142,7 +142,7 @@
         }
         {
             await Api.TestConnectionAsync(db, CancellationToken.None);
-            _message = "Connection successful.";
+            NotificationService.SetMessage(ref _message, "Connection successful.", _notificationKey + "_message", NotificationLevel.Success);
         }
     }
 
@@ -157,7 +157,7 @@
         IReadOnlyList<string> tables = await Api.GetTablesAsync(db, CancellationToken.None);
         _tables.Clear();
         _tables.AddRange(tables);
-        _message = $"Loaded {_tables.Count} tables.";
+        NotificationService.SetMessage(ref _message, $"Loaded {_tables.Count} tables.", _notificationKey + "_message", NotificationLevel.Information);
     }
 
     private async Task LoadColumnsAsync(string table)
@@ -179,7 +179,7 @@
     {
         if (_selectedIndex < 0 || _selectedIndex >= _databases.Count)
         {
-            _message = "No database selected.";
+            NotificationService.SetMessage(ref _message, "No database selected.", _notificationKey + "_message", NotificationLevel.Information);
             return null;
         }
 

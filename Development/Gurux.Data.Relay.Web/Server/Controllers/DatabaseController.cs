@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Service.Orm.Common.Model;
 using Gurux.Data.Relay.Configuration;
 using Gurux.Data.Relay.Web.Server.Services;
@@ -36,7 +68,7 @@ public sealed class DatabaseController : ControllerBase
     }
 
     /// <summary>
-    /// Create tables from JSON schema and register their columns and keys in client settings.
+    /// Create missing tables from JSON schema and register their columns and keys in client settings.
     /// </summary>
     [HttpPost("client/{databaseId:guid}/schema")]
     [Consumes("application/json")]
@@ -51,7 +83,7 @@ public sealed class DatabaseController : ControllerBase
         return await ImportSchemaCoreAsync(database, connections, settings, cancellationToken);
     }
 
-    /// <summary>Create physical tables in a catalog database without configuring a relay mode.</summary>
+    /// <summary>Create missing physical tables in a catalog database without configuring a relay mode.</summary>
     [HttpPost("/api/databases/{databaseId:guid}/schema")]
     [Consumes("application/json")]
     [RequestSizeLimit(10 * 1024 * 1024)]
@@ -138,15 +170,15 @@ public sealed class DatabaseController : ControllerBase
         await connection.OpenAsync(cancellationToken);
         var manager = new GXSchemaManager(connection);
         var existingTables = manager.GetTables();
-        foreach (var schema in ordered)
-            if (existingTables.Contains(schema.ToString(), StringComparer.OrdinalIgnoreCase))
-                return Conflict($"Table '{schema}' already exists.");
         try
         {
             using var transaction = connection.BeginTransaction();
             foreach (var schema in ordered)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (existingTables.Contains(schema.ToString(), StringComparer.OrdinalIgnoreCase))
+                    continue;
+                Database.GXDataVaultSchemaCompatibility.Normalize(schema, database.Type);
                 manager.CreateTable(transaction, schema);
             }
             transaction.Commit();

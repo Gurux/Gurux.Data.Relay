@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Data.Relay.Realtime;
 using System.Collections.Concurrent;
 using System.Data.Common;
@@ -134,6 +166,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
 
     private async Task SaveDataVaultCoreAsync(GXDataVaultConfiguration configuration, CancellationToken cancellationToken, bool restoringArchive)
     {
+        GXDataVaultMappingValidator.Validate(configuration.GetMappings());
         await SaveConfigurationAsync(ApplicationMode.DataVault, configuration, cancellationToken, restoringArchive);
         if (DataVaultConfigurationSaved is { } handlers)
             foreach (Func<Task> handler in handlers.GetInvocationList()) await handler();
@@ -162,7 +195,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
         using GXDbConnection connection = new(native);
         using var transaction = connection.BeginTransaction();
         RelayConfiguration? record = await connection.SingleOrDefaultAsync<RelayConfiguration>(transaction,
-            GXSelectArgs.SelectAll<RelayConfiguration>(r => r.Mode == mode), cancellationToken);
+            Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayConfiguration>(connection, ("Mode", mode)), cancellationToken);
         if (record != null)
         {
             record.Payload = await new GXRelationalConfigurationStore(connection, transaction, cancellationToken).LoadAsync(record.PayloadId);
@@ -191,7 +224,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
             try
             {
                 RelayConfiguration? record = await connection.SingleOrDefaultAsync<RelayConfiguration>(transaction,
-                    GXSelectArgs.SelectAll<RelayConfiguration>(r => r.Mode == mode), cancellationToken);
+                    Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayConfiguration>(connection, ("Mode", mode)), cancellationToken);
                 bool creating = record is null;
                 record ??= new RelayConfiguration { Id = Guid.NewGuid(), Mode = mode, PayloadId = await GetSettingsIdAsync(connection, transaction, mode, cancellationToken) };
                 record.Updated = DateTimeOffset.Now;
@@ -200,7 +233,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
                 {
                     // Logging can create the mode's settings parent before its first configuration.
                     var logParent = await connection.SingleOrDefaultAsync<GXSettings>(transaction,
-                        GXSelectArgs.SelectById<GXSettings>(record.PayloadId), cancellationToken);
+                        Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXSettings>(connection, ("Id", record.PayloadId)), cancellationToken);
                     if (logParent is not null) GXEntityPersistence.CopyMetadata(logParent, settings);
                 }
                 await new GXRelationalConfigurationStore(connection, transaction, cancellationToken, restoringArchive,
@@ -272,7 +305,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
         ApplicationMode mode, CancellationToken token)
     {
         var settings = await connection.SingleOrDefaultAsync<GXSettings>(transaction,
-            GXSelectArgs.SelectAll<GXSettings>(s => s.Mode == mode), token);
+            Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXSettings>(connection, ("Mode", mode)), token);
         return settings?.Id ?? Guid.NewGuid();
     }
 
@@ -287,7 +320,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
             using GXDbConnection connection = new(native);
             using var transaction = connection.BeginTransaction();
             var record = await connection.SingleOrDefaultAsync<RelayRuntimeState>(transaction,
-                GXSelectArgs.SelectAll<RelayRuntimeState>(r => r.Id == mode), cancellationToken);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayRuntimeState>(connection, ("Id", mode)), cancellationToken);
             if (record is not null)
             {
                 var state = (T)await new GXRelationalRuntimeStateStore(connection, transaction, cancellationToken).LoadAsync(mode);
@@ -317,7 +350,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
             using var transaction = connection.BeginTransaction();
             var runtimeStore = new GXRelationalRuntimeStateStore(connection, transaction, cancellationToken);
             var existingRecord = await connection.SingleOrDefaultAsync<RelayRuntimeState>(transaction,
-                GXSelectArgs.SelectAll<RelayRuntimeState>(r => r.Id == mode), cancellationToken);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<RelayRuntimeState>(connection, ("Id", mode)), cancellationToken);
             var before = existingRecord is null ? null : StateContent(await runtimeStore.LoadAsync(mode));
             if (update is not null)
             {
@@ -379,7 +412,7 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
             using var connection = new GXDbConnection(native);
             using var transaction = connection.BeginTransaction();
             var mapping = await connection.SingleOrDefaultAsync<GXDataVaultTableMapping>(transaction,
-                GXSelectArgs.SelectAll<GXDataVaultTableMapping>(m => m.Id == mappingId), cancellationToken);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDataVaultTableMapping>(connection, ("Id", mappingId)), cancellationToken);
             // A mapping can be removed while its run is completing.
             if (mapping == null)
             {
@@ -399,14 +432,14 @@ public sealed partial class GXDatabaseConfigurationService : IGXConfigurationSer
             }
             Guid ownerId = ownerIds[0];
             var owner = await connection.SingleOrDefaultAsync<GXSettings>(transaction,
-                GXSelectArgs.SelectAll<GXSettings>(s => s.Id == ownerId), cancellationToken);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXSettings>(connection, ("Id", ownerId)), cancellationToken);
             if (owner?.Mode != ApplicationMode.DataVault)
             {
                 transaction.Commit();
                 return;
             }
             var previous = await connection.SingleOrDefaultAsync<Shared.GXDataVaultMappingState>(transaction,
-                GXSelectArgs.SelectAll<GXDataVaultMappingState>(s => s.Id == mappingId), cancellationToken);
+                Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDataVaultMappingState>(connection, ("Id", mappingId)), cancellationToken);
             if (status != "Running" && previous?.RunId != runId) { transaction.Commit(); return; }
             var state = previous == null ? new GXDataVaultMappingState { Id = mappingId }
                 : System.Text.Json.JsonSerializer.Deserialize<GXDataVaultMappingState>(System.Text.Json.JsonSerializer.Serialize(previous))!;

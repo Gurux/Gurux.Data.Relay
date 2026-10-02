@@ -1,3 +1,5 @@
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -41,10 +43,7 @@
     <section class="panel">
         <h2>Settings</h2>
         <p class="summary">Configure where Gurux.Data.Relay stores configuration settings.</p>
-        @if (!string.IsNullOrWhiteSpace(_message))
-        {
-            <p class="notice">@_message</p>
-        }
+
 
         <fieldset class="mb-3">
             <legend>Configuration database</legend>
@@ -57,7 +56,7 @@
                 }
             </select>
             <p class="form-text">Leave empty to use the database type and connection string below.</p>            @if (_catalogError is not null) {
-            <p role="alert">@_catalogError</p>
+
                         }
             <p><a href="databases">Manage databases</a></p>
             <p>Save switches the configuration store. Existing settings and the database catalog are not copied to the selected database.</p>
@@ -106,7 +105,7 @@
         <h2>Configuration table changes</h2>
         @if (_schemaError is not null)
         {
-            <p class="notice">@_schemaError</p>
+
         }
         else if (_tableChanges.Count == 0)
         {
@@ -131,6 +130,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private List<GXDatabase> _catalog = [];
     private string? _catalogError;
     private bool _manualConnection;
@@ -169,6 +169,10 @@
 
     private async Task LoadAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+        NotificationService.RemoveByKey(_notificationKey + "_catalogError");
+        NotificationService.RemoveByKey(_notificationKey + "_schemaError");
+
         _settingsLoaded = false;
         try
         {
@@ -179,48 +183,51 @@
             _communicationLogLevel = _loadedCommunicationLogLevel = settings.CommunicationLogLevel ?? LogLevel.Information;
             _type = settings.Type;
             _connectionString = settings.ConnectionString; _loadedType = _type; _loadedConnection = _connectionString;
-            _message = "Configuration store settings loaded.";
             _settingsLoaded = true;
             _manualConnection = false;
         }
         catch (Exception ex)
         {
-            _message = $"Could not load settings: {ex.Message}";
+            NotificationService.SetMessage(ref _message, $"Could not load settings: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
             return;
         }
         try
         {
             _catalog = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
             _selectedDatabaseId = _catalog.FirstOrDefault(d => d.Type == _type && d.ConnectionString == _connectionString)?.Id;
-            _catalogError = null;
+            NotificationService.SetMessage(ref _catalogError, null, _notificationKey + "_catalogError", NotificationLevel.Error);
         }
-        catch (Exception ex) { _catalogError = $"Could not load the database catalog: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _catalogError, $"Could not load the database catalog: {ex.Message}", _notificationKey + "_catalogError", NotificationLevel.Error); }
         try
         {
             _tableChanges = await Api.GetConfigurationTableChangesAsync(CancellationToken.None);
-            _schemaError = null;
+            NotificationService.SetMessage(ref _schemaError, null, _notificationKey + "_schemaError", NotificationLevel.Error);
         }
-        catch (Exception ex) { _schemaError = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _schemaError, ex.Message, _notificationKey + "_schemaError", NotificationLevel.Error); }
     }
 
     private async Task TestAsync()
     {
         if (!_settingsLoaded) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             GXStoreSettings payload = BuildSettings();
             await Api.TestStoreSettingsAsync(payload, CancellationToken.None);
-            _message = "Configuration store connection successful.";
+            NotificationService.SetMessage(ref _message, "Configuration store connection successful.", _notificationKey + "_message", NotificationLevel.Success);
         }
         catch (Exception ex)
         {
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
     }
 
     private async Task SaveAsync()
     {
         if (_saving || !_settingsLoaded) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _saving = true;
         try
         {
@@ -232,11 +239,11 @@
             _loadedCommunicationLogLevel = _communicationLogLevel;
             _loadedType = payload.Type;
             _loadedConnection = payload.ConnectionString;
-            _message = "Configuration store settings saved.";
+            NotificationService.SetMessage(ref _message, "Configuration store settings saved.", _notificationKey + "_message", NotificationLevel.Success);
         }
         catch (Exception ex)
         {
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
         finally { _saving = false; }
     }

@@ -1,3 +1,35 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Service.Orm.Common.Model;
 using Gurux.Data.Relay.Realtime;
 using System.Data;
@@ -10,13 +42,10 @@ using Gurux.Data.Relay.Database;
 using Gurux.Data.Relay.Log;
 using Gurux.Service.Orm;
 using Gurux.Service.Orm.Model;
-using Gurux.Data.Relay.Enums;
-using Microsoft.Extensions.Logging;
 using Gurux.Data.Relay.Shared.Enums;
 using Gurux.Service.Orm.Common.Enums;
 using Gurux.Data.Relay.Shared;
 using Gurux.Data.Relay.Sources;
-using Microsoft.Extensions.Configuration;
 
 namespace Gurux.Data.Relay.Web.Server.Services;
 
@@ -38,6 +67,7 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
     private readonly IGXDatabaseConnectionTestService _connectionTestService;
     private readonly IGXDatabaseMetadataService _metadataService;
     private readonly IClientSchemaSender _schemaSender;
+    private readonly IGXDatabaseCatalogService? _catalog;
     private readonly IConfiguration? _sourceConfiguration;
 
     public GXRelayAdministrationService(
@@ -46,7 +76,8 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
         GXConfigurationStoreSettings storeSettings,
         IGXDatabaseConnectionTestService connectionTestService,
         IGXDatabaseMetadataService metadataService,
-        IClientSchemaSender schemaSender, IGXRelayChangePublisher? changes = null, IConfiguration? sourceConfiguration = null)
+        IClientSchemaSender schemaSender, IGXDatabaseCatalogService? catalog = null,
+        IGXRelayChangePublisher? changes = null, IConfiguration? sourceConfiguration = null)
     {
         _configurationService = configurationService;
         _connectionFactory = connectionFactory;
@@ -54,6 +85,7 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
         _connectionTestService = connectionTestService;
         _metadataService = metadataService;
         _schemaSender = schemaSender;
+        _catalog = catalog;
         _sourceConfiguration = sourceConfiguration;
     }
 
@@ -86,7 +118,7 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
                 List<GXDatabaseConfiguration> previousDatabases = Clone(client.Databases);
                 foreach (GXTableConfiguration table in databases.SelectMany(database => database.Tables ?? []))
                 {
-                    if (table.Schedule.Type == ScheduleType.Cron &&
+                    if (table.Schedule?.Type == ScheduleType.Cron &&
                         GXCronSchedule.Validate(table.Schedule.Expression) is { } error)
                         throw new InvalidOperationException($"Table '{table.Name}': {error}");
                 }
@@ -309,43 +341,85 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
             _ => throw new NotSupportedException($"Mode '{mode}' is not supported."),
         };
 
-        return Shared.GXDatabaseSelectionsJson.WithoutCatalogFields(
+        string json = Shared.GXDatabaseSelectionsJson.WithoutConcurrencyStamps(
             JsonSerializer.Serialize(configuration, configuration.GetType(), SerializerOptions), SerializerOptions);
+        var required = new Dictionary<Guid, List<string>>();
+        void Add(Guid databaseId, string table)
+        {
+            if (databaseId == Guid.Empty || string.IsNullOrWhiteSpace(table)) return;
+            (required.TryGetValue(databaseId, out List<string>? tables) ? tables : required[databaseId] = []).Add(table);
+        }
+        if (configuration is GXClientConfiguration client)
+            foreach (GXDatabaseConfiguration database in client.Databases)
+                foreach (GXTableConfiguration table in database.Tables ?? []) Add(database.Id, table.Name);
+        else if (configuration is GXDataVaultConfiguration vault)
+            foreach (GXDataVaultTableMapping mapping in vault.GetMappings()) Add(mapping.Database, mapping.TargetTable?.Name ?? string.Empty);
+
+        var schemas = new Dictionary<Guid, IReadOnlyList<GXTableSchema>>();
+        var databases = configuration switch
+        {
+            GXClientConfiguration clientConfiguration => clientConfiguration.Databases,
+            GXDataVaultConfiguration vaultConfiguration => vaultConfiguration.Databases,
+            _ => []
+        };
+        foreach ((Guid databaseId, List<string> tables) in required)
+        {
+            GXDatabaseConfiguration database = databases.Single(d => d.Id == databaseId);
+            schemas[databaseId] = await Task.WhenAll(tables.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(table => _metadataService.DescribeTableAsync(database, table, cancellationToken)));
+        }
+        return GXModeSettingsSchemas.Write(json, schemas, SerializerOptions);
     }
 
-    public async Task ImportSettingsJsonAsync(ApplicationMode mode, string json, CancellationToken cancellationToken)
+    public async Task ImportSettingsJsonAsync(ApplicationMode mode, string json, IReadOnlyDictionary<Guid, Guid>? databaseMap, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
             throw new InvalidOperationException("Import payload cannot be empty.");
         }
 
+        IReadOnlyDictionary<Guid, IReadOnlyList<GXTableSchema>> schemas = GXModeSettingsSchemas.Read(json, SerializerOptions);
+        bool hasDatabaseMap = databaseMap is { Count: > 0 };
         switch (mode)
         {
             case ApplicationMode.Client:
                 {
-                    GXClientConfiguration clientConfiguration = JsonSerializer.Deserialize<GXClientConfiguration>(json, SerializerOptions)
+                    GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, SerializerOptions)
                         ?? throw new InvalidOperationException("Client settings import payload was empty.");
-                    if (mode != clientConfiguration.Mode)
+                    if (mode != imported.Mode)
                     {
-                        throw new InvalidOperationException($"Client settings import mode '{clientConfiguration.Mode}' does not match '{mode}'.");
+                        throw new InvalidOperationException($"Client settings import mode '{imported.Mode}' does not match '{mode}'.");
                     }
+                    var previousClient = await _configurationService.LoadClientAsync(cancellationToken) ?? new GXClientConfiguration();
+                    if (hasDatabaseMap)
+                    {
+                        GXSettingsImportDatabaseMapper.RemapSettings(imported, databaseMap!, await GetImportTargetCatalogAsync(previousClient.Databases, cancellationToken));
+                        schemas = GXSettingsImportDatabaseMapper.RemapSchemas(schemas, databaseMap!);
+                    }
+                    GXClientConfiguration clientConfiguration = GXConfigurationMapper.FromEntities<GXClientConfiguration>(imported);
 
                     NormalizeClientConfiguration(clientConfiguration);
-                    GXClientConfiguration? previousClient = await _configurationService.LoadClientAsync(cancellationToken);
                     previousClient?.EnsureRoutingIds();
                     await _configurationService.ImportClientAsync(clientConfiguration, cancellationToken);
                     await UpdateClientStateDatabasesAsync(previousClient?.Databases ?? [], clientConfiguration.Databases, cancellationToken);
+                    await RestoreMissingTablesAsync(clientConfiguration.Databases,
+                        clientConfiguration.Databases.SelectMany(database => (database.Tables ?? []).Select(table => (database.Id, table.Name))), schemas, cancellationToken);
                     break;
                 }
             case ApplicationMode.Server:
                 {
-                    GXServerConfiguration serverConfiguration = JsonSerializer.Deserialize<GXServerConfiguration>(json, SerializerOptions)
+                    GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, SerializerOptions)
                         ?? throw new InvalidOperationException("Server settings import payload was empty.");
-                    if (mode != serverConfiguration.Mode)
+                    if (mode != imported.Mode)
                     {
-                        throw new InvalidOperationException($"Server settings import mode '{serverConfiguration.Mode}' does not match '{mode}'.");
+                        throw new InvalidOperationException($"Server settings import mode '{imported.Mode}' does not match '{mode}'.");
                     }
+                    var existing = await _configurationService.LoadServerAsync(cancellationToken) ?? new GXServerConfiguration();
+                    if (hasDatabaseMap)
+                    {
+                        GXSettingsImportDatabaseMapper.RemapSettings(imported, databaseMap!, await GetImportTargetCatalogAsync(existing.Databases, cancellationToken));
+                    }
+                    GXServerConfiguration serverConfiguration = GXConfigurationMapper.FromEntities<GXServerConfiguration>(imported);
 
                     NormalizeServerConfiguration(serverConfiguration);
                     await _configurationService.ImportServerAsync(serverConfiguration, cancellationToken);
@@ -353,19 +427,79 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
                 }
             case ApplicationMode.DataVault:
                 {
-                    GXDataVaultConfiguration dataVaultConfiguration = JsonSerializer.Deserialize<GXDataVaultConfiguration>(json, SerializerOptions)
+                    GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, SerializerOptions)
                         ?? throw new InvalidOperationException("Data Vault settings import payload was empty.");
-                    if (mode != dataVaultConfiguration.Mode)
+                    if (mode != imported.Mode)
                     {
-                        throw new InvalidOperationException($"Data Vault settings import mode '{dataVaultConfiguration.Mode}' does not match '{mode}'.");
+                        throw new InvalidOperationException($"Data Vault settings import mode '{imported.Mode}' does not match '{mode}'.");
                     }
+                    var existing = await _configurationService.LoadDataVaultAsync(cancellationToken) ?? new GXDataVaultConfiguration();
+                    if (hasDatabaseMap)
+                    {
+                        GXSettingsImportDatabaseMapper.RemapSettings(imported, databaseMap!, await GetImportTargetCatalogAsync(existing.Databases, cancellationToken));
+                        schemas = GXSettingsImportDatabaseMapper.RemapSchemas(schemas, databaseMap!);
+                    }
+                    GXDataVaultLegacyMappingRecovery.Recover(
+                        imported.Databases.SelectMany(database => database.Mappings ?? [])
+                            .Concat(imported.Mappings ?? []), schemas);
+                    GXDataVaultConfiguration dataVaultConfiguration = GXConfigurationMapper.FromEntities<GXDataVaultConfiguration>(imported);
 
                     NormalizeDataVaultConfiguration(dataVaultConfiguration);
                     await _configurationService.ImportDataVaultAsync(dataVaultConfiguration, cancellationToken);
+                    await RestoreMissingTablesAsync(dataVaultConfiguration.Databases,
+                        dataVaultConfiguration.GetMappings().Select(mapping => (mapping.Database, mapping.TargetTable?.Name ?? string.Empty)), schemas, cancellationToken);
                     break;
                 }
             default:
                 throw new NotSupportedException($"Mode '{mode}' is not supported.");
+        }
+    }
+
+    private static IReadOnlyList<GXDatabase> ToCatalog(IReadOnlyList<GXDatabaseConfiguration> databases)
+        => databases.Select(database => new GXDatabase
+        {
+            Id = database.Id,
+            Type = database.Type,
+            Description = database.Description,
+            ConnectionString = database.ConnectionString,
+            RecordSource = database.RecordSource,
+            DeleteMode = database.DeleteMode,
+            DeletedColumn = database.DeletedColumn,
+            ConcurrencyStamp = database.ConcurrencyStamp,
+            CreationTime = database.CreationTime,
+            Updated = database.Updated,
+        }).ToList();
+
+    private async Task<IReadOnlyList<GXDatabase>> GetImportTargetCatalogAsync(IReadOnlyList<GXDatabaseConfiguration> fallback, CancellationToken cancellationToken)
+    {
+        if (_catalog is not null)
+        {
+            var catalog = await _catalog.GetDatabasesAsync(cancellationToken);
+            if (catalog.Count > 0) return catalog;
+        }
+        return ToCatalog(fallback);
+    }
+
+    private async Task RestoreMissingTablesAsync(IReadOnlyList<GXDatabaseConfiguration> databases,
+        IEnumerable<(Guid DatabaseId, string TableName)> required,
+        IReadOnlyDictionary<Guid, IReadOnlyList<GXTableSchema>> schemas, CancellationToken cancellationToken)
+    {
+        foreach ((Guid databaseId, string tableName) in required.Where(item => !string.IsNullOrWhiteSpace(item.TableName)).Distinct())
+        {
+            GXDatabaseConfiguration database = databases.Single(database => database.Id == databaseId);
+            await using DbConnection native = _connectionFactory.CreateConnection(database);
+            await native.OpenAsync(cancellationToken);
+            using GXDbConnection connection = new(native);
+            GXSchemaManager manager = new(connection);
+            if (manager.TableExist(tableName))
+            {
+                continue;
+            }
+            GXTableSchema schema = schemas.TryGetValue(databaseId, out IReadOnlyList<GXTableSchema>? values)
+                ? values.SingleOrDefault(value => string.Equals(value.Name, tableName, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException($"The imported settings do not contain a schema for missing table '{tableName}' in database '{database.Description ?? databaseId.ToString()}'.")
+                : throw new InvalidOperationException($"The imported settings do not contain schemas for missing table '{tableName}' in database '{database.Description ?? databaseId.ToString()}'.");
+            manager.CreateTable(schema);
         }
     }
 
@@ -384,17 +518,25 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
         using var connection = new GXDbConnection(native);
         GXSelectArgs Query()
         {
-            var query = GXSelectArgs.SelectAll<GXEventLog>(e => e.Mode == mode);
+            var query = Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXEventLog>(connection, ("Mode", mode));
             query.UseQueryCache(new Gurux.Service.DB.GXQueryCache(_storeSettings.Type));
             if (request.MinimumLevel is LogLevel level) query.Where.And<GXEventLog>(e => e.Level >= level);
-            if (request.DatabaseIndex is int database) query.Where.And<GXEventLog>(e => e.DatabaseIndex == database);
+            if (request.DatabaseIndex is int database)
+            {
+                var schema = new Gurux.Service.Orm.Model.GXSchemaManager(connection).Describe<GXEventLog>();
+                var column = schema.Columns.Single(c => c.Name == nameof(GXEventLog.DatabaseIndex));
+                query.Where.FilterBy(new (Gurux.Service.Orm.Common.Model.GXColumnSchema Column, object? Value)[]
+                {
+                    (column, database)
+                }.AsEnumerable());
+            }
             query.Where.FilterBy(request.Filter);
             return query;
         }
         var countQuery = Query();
         countQuery.Columns.Clear();
         countQuery.Columns.Add<GXEventLog>(e => GXSql.Count(e.Id), e => e.Id);
-        int total = await connection.ExecuteScalarAsync<int>(countQuery.ToString(false), cancellationToken);
+        int total = await connection.ExecuteScalarAsync<int>(countQuery, cancellationToken);
         var query = Query();
         query.Descending = true;
         query.OrderBy.Add<GXEventLog>(e => e.Id);
@@ -611,7 +753,7 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
                 table.LastTransferred = stateByName.TryGetValue(stateTableName, out GXClientTableState? tableState)
                     ? tableState.LastSuccessfulTransfer
                     : null;
-                table.NextTransferTime = table.Schedule.Type is ScheduleType.Manual or ScheduleType.DatabaseChange
+                table.NextTransferTime = table.Schedule?.Type is ScheduleType.Manual or ScheduleType.DatabaseChange
                     ? null : tableState?.NextTransferTime;
             }
         }
@@ -660,7 +802,10 @@ public sealed class GXRelayAdministrationService : IGXRelayAdministrationService
             GXDataSourceServiceExtensions.GetProviderRouteIds(_sourceConfiguration));
         foreach (GXTableConfiguration table in configuration.Databases.SelectMany(db => db.Tables ?? []))
         {
-            if (table.Schedule.Type != ScheduleType.Cron) continue;
+            if (table.Schedule?.Type != ScheduleType.Cron)
+            {
+                continue;
+            }
             string? error = GXCronSchedule.Validate(table.Schedule.Expression);
             if (error != null) throw new InvalidOperationException($"Table '{table.Name}': {error}");
         }

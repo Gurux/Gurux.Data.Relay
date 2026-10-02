@@ -1,3 +1,38 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using Gurux.Data.Relay.Database;
+using E = System.Linq.Expressions.Expression;
+using Gurux.Service.Orm;
 using Gurux.Service.Orm.Common.Model;
 using System.Data.Common;
 using System.Text.RegularExpressions;
@@ -5,22 +40,32 @@ using Gurux.Data.Relay.Configuration;
 using Gurux.Data.Relay.Shared;
 using Gurux.Service.Orm.Common.Enums;
 using Gurux.Data.Relay.Shared.Enums;
+using Gurux.Service.DB;
 namespace Gurux.Data.Relay.Client;
 
 public sealed record GXInformationMartPlan(
-    GXTableSchema TargetSchema,
-    GXDataVaultTableMapping Mapping,
-    string SelectSql, string TargetSql,
-    string TargetColumnsSql,
-    IReadOnlyList<string> CardinalityChecks);
+    GXTableSchema TargetSchema, GXDataVaultTableMapping Mapping, GXSelectArgs Query,
+    GXTableSchema Target, IReadOnlyList<string> TargetColumns, IReadOnlyList<GXSelectArgs> Checks, DatabaseType Provider)
+{
+    public string SelectSql
+    {
+        get
+        {
+            Query.UseQueryCache(new GXQueryCache(Provider));
+            return Query.ToString(false);
+        }
+    }
+}
 
 /// <summary>Plans a current-state mart from mapped keys, without accepting SQL expressions.</summary>
 public sealed class GXInformationMartBuilder(
-    IReadOnlyList<GXDataVaultTableMapping> mappings, Func<string, GXTableSchema> describe, DatabaseType databaseType)
+    IReadOnlyList<GXDataVaultTableMapping> mappings, Func<string, GXTableSchema> describe, DatabaseType databaseType,
+    IReadOnlyList<GXMartReferenceJoin>? referenceJoins = null)
 {
     private sealed record Edge(GXDataVaultTableMapping Parent, GXDataVaultTableMapping Child, GXDataVaultColumnMapping ParentKey, GXDataVaultColumnMapping ChildKey);
     private sealed record Node(GXDataVaultTableMapping GXDataVaultTableMapping, List<Edge> Path);
     private readonly Dictionary<string, GXTableSchema> _schemas = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IReadOnlyList<GXMartReferenceJoin> _referenceJoins = referenceJoins ?? [];
     private static GXTable Source(GXDataVaultTableMapping mapping) => mapping.SourceTable
         ?? throw new ArgumentException($"Mapping '{mapping.Id}' requires a source table.");
     private static GXTable Target(GXDataVaultTableMapping mapping) => mapping.TargetTable
@@ -38,21 +83,22 @@ public sealed class GXInformationMartBuilder(
         if (string.IsNullOrEmpty(value) || !Regex.IsMatch(value, @"\A[A-Za-z_][A-Za-z0-9_]*\z"))
             throw new ArgumentException("Use letters, digits and underscores for table and output column names.");
     }
-    private string Q(string value)
+    private static GXSelectArgs Table(GXTableSchema schema, string alias)
     {
-        char open = databaseType == DatabaseType.MSSQL ? '[' : databaseType is DatabaseType.MySQL or DatabaseType.MariaDB ? '`' : '"';
-        char close = open == '[' ? ']' : open;
-        return open + value.Replace(close.ToString(), new string(close, 2), StringComparison.Ordinal) + close;
+        var source = GXSelectArgs.Select(schema.Columns);
+        return GXSelectArgs.From(() => GXSql.As(GXSql.Subquery<object>(source), alias));
     }
-    private string Table(GXTableSchema schema) => string.IsNullOrEmpty(schema.Schema) ? Q(schema.Name) : Q(schema.Schema) + "." + Q(schema.Name);
+    private GXInformationMartPlan Plan(GXTableSchema target, GXDataVaultTableMapping mapping, GXSelectArgs query,
+        IReadOnlyList<GXSelectArgs> checks, IReadOnlyList<string>? columns = null) =>
+        new(target, mapping, query, target, columns ?? target.Columns.Select(c => c.Name).ToArray(), checks, databaseType);
     private GXColumnSchema Physical(GXDataVaultTableMapping mapping, string name) => Schema(mapping).Columns.FirstOrDefault(c => Same(c.Name, name))
         ?? throw new ArgumentException($"GXDataVaultColumnMapping '{name}' is missing from '{Target(mapping).Name}'.");
 
     private List<GXDataVaultTableMapping> Hubs(string source)
     {
-        var selected = mappings.Where(m => SameTable(Target(m).Name, source) && m.ObjectType is DataVaultObjectType.Staging or DataVaultObjectType.Hub or DataVaultObjectType.Satellite).ToList();
-        if (selected.Count != 1) throw new ArgumentException("Select a table with exactly one Staging, Hub or Satellite mapping in this database.");
-        if (selected[0].ObjectType == DataVaultObjectType.Hub) return selected;
+        var selected = mappings.Where(m => SameTable(Target(m).Name, source) && m.ObjectType is DataVaultObjectType.Staging or DataVaultObjectType.Hub or DataVaultObjectType.Link or DataVaultObjectType.Satellite).ToList();
+        if (selected.Count != 1) throw new ArgumentException("Select a table with exactly one Staging, Hub, Link or Satellite mapping in this database.");
+        if (selected[0].ObjectType is DataVaultObjectType.Hub or DataVaultObjectType.Link) return selected;
         var hubs = mappings.Where(m => m.ObjectType == DataVaultObjectType.Hub &&
             (SameTable(Source(m).Name, Source(selected[0]).Name) ||
              selected[0].ObjectType == DataVaultObjectType.Staging && SameTable(Source(m).Name, Target(selected[0]).Name))).ToList();
@@ -103,9 +149,10 @@ public sealed class GXInformationMartBuilder(
 
     private GXDataVaultColumnMapping HubKey(GXDataVaultTableMapping hub)
     {
-        var keys = hub.Columns.Where(c => c.Role == DataVaultColumnRole.HashKey).ToArray();
+        var role = hub.ObjectType == DataVaultObjectType.Link ? DataVaultColumnRole.LinkHashKey : DataVaultColumnRole.HashKey;
+        var keys = hub.Columns.Where(c => c.Role == role).ToArray();
         if (keys.Length != 1 || Schema(hub).Columns.Count(c => c.IsPrimaryKey) != 1 || !Physical(hub, keys[0].TargetColumn).IsPrimaryKey)
-            throw new ArgumentException($"Hub '{Target(hub).Name}' must have one mapped hash primary key.");
+            throw new ArgumentException($"{hub.ObjectType} '{Target(hub).Name}' must have one mapped primary key.");
         return keys[0];
     }
 
@@ -165,7 +212,10 @@ public sealed class GXInformationMartBuilder(
                     child.ObjectType == DataVaultObjectType.Satellite && ownsParentKey;
                 bool reference = child.ObjectType == DataVaultObjectType.Reference && c.Role == DataVaultColumnRole.BusinessKey &&
                     parent.ObjectType != DataVaultObjectType.Reference && p.Role is DataVaultColumnRole.BusinessKey or DataVaultColumnRole.Attribute && sameSource;
-                if (hash || linkHub || linkSatellite || reference) yield return new(parent, child, p, c);
+                bool explicitReference = child.ObjectType == DataVaultObjectType.Reference && parent.ObjectType != DataVaultObjectType.Reference &&
+                    _referenceJoins.Any(j => j.FromMappingId == parent.Id && j.ReferenceMappingId == child.Id &&
+                        Same(j.FromColumn, p.TargetColumn) && Same(j.ReferenceColumn, c.TargetColumn));
+                if (hash || linkHub || linkSatellite || reference || explicitReference) yield return new(parent, child, p, c);
             }
     }
 
@@ -184,11 +234,18 @@ public sealed class GXInformationMartBuilder(
 
     public GXInformationMartPlan Build(GXCreateMartRequest request)
     {
+        if (request.Definition?.Grain == GXMartGrain.Reference)
+            return BuildReference(request);
+        if (request.Definition?.Grain == GXMartGrain.Link)
+            return BuildLinkGrain(request);
+        if (request.Definition?.Grain is GXMartGrain.Custom)
+            throw new ArgumentException("The selected Mart grain is not supported by this builder yet. Use Hub grain.");
         if (!request.UseExistingTable) Name(request.TargetTable);
         if (request.Definition == null || request.Definition.Columns == null || request.Definition.Columns.Count == 0)
             throw new ArgumentException("Select mart columns, including the Hub hash key.");
         var preview = Preview(request.SourceTable, request.Definition.HubMappingId);
         if (preview.HubMappingId == Guid.Empty) throw new ArgumentException("Select a Hub.");
+        ValidateStageCoverage(request, preview);
         var hub = mappings.Single(m => m.Id == preview.HubMappingId);
         if (request.Schedule == null || request.Schedule.Type is not (ScheduleType.Manual or ScheduleType.Interval) ||
             request.Schedule.Type == ScheduleType.Interval && request.Schedule.IntervalSeconds is not > 0)
@@ -208,17 +265,21 @@ public sealed class GXInformationMartBuilder(
             ObjectType = DataVaultObjectType.InformationMart,
             Schedule = new() { Type = request.Schedule.Type, IntervalSeconds = request.Schedule.IntervalSeconds }
         };
-        List<string> expressions = [], checks = [];
+        List<(System.Linq.Expressions.Expression Expression, string? Alias)> expressions = [];
+        List<GXSelectArgs> checks = [];
         HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
         bool hasKey = false;
         foreach (var selection in request.Definition.Columns)
         {
-            if (!request.UseExistingTable) Name(selection.TargetColumn);
-            else if (actualTarget!.Columns.All(c => !Same(c.Name, selection.TargetColumn)))
-                throw new ArgumentException($"Mart column '{selection.TargetColumn}' is missing from the target table.");
-            if (!names.Add(selection.TargetColumn)) throw new ArgumentException("Mart output column names must be distinct.");
             var option = preview.Columns.SingleOrDefault(c => c.MappingId == selection.MappingId && Same(c.Column, selection.Column))
                 ?? throw new ArgumentException($"GXDataVaultColumnMapping '{selection.Column}' has no unambiguous mapped path from the selected Hub.");
+            if (!option.IsKey || selection.IncludeInOutput)
+            {
+                if (!request.UseExistingTable) Name(selection.TargetColumn);
+                else if (actualTarget!.Columns.All(c => !Same(c.Name, selection.TargetColumn)))
+                    throw new ArgumentException($"Mart column '{selection.TargetColumn}' is missing from the target table.");
+                if (!names.Add(selection.TargetColumn)) throw new ArgumentException("Mart output column names must be distinct.");
+            }
             if (selection.Aggregation is not (Aggregation.None or Aggregation.Min or Aggregation.Max or Aggregation.Count or Aggregation.CountDistinct or Aggregation.Average) || option.RequiresAggregation && selection.Aggregation == Aggregation.None)
                 throw new ArgumentException("Choose Min, Max, Count, CountDistinct or Average for columns reached through a Link.");
             if (option.IsKey && selection.Aggregation != Aggregation.None) throw new ArgumentException("The Hub key cannot be aggregated.");
@@ -231,6 +292,8 @@ public sealed class GXInformationMartBuilder(
                 Aggregation = selection.Aggregation,
                 Role = option.IsKey ? DataVaultColumnRole.HashKey : DataVaultColumnRole.Attribute
             });
+            if (option.IsKey && !selection.IncludeInOutput)
+                continue;
             var node = nodes.Single(n => n.GXDataVaultTableMapping.Id == selection.MappingId);
             var source = Physical(node.GXDataVaultTableMapping, selection.Column);
             bool count = selection.Aggregation is Aggregation.Count or Aggregation.CountDistinct;
@@ -251,11 +314,98 @@ public sealed class GXInformationMartBuilder(
                 IsPrimaryKey = option.IsKey,
                 IsNullable = !option.IsKey && !count
             });
-            expressions.Add(Expression(node, selection, hub, checks) + " AS " + Q(selection.TargetColumn));
+            expressions.Add((Expression(node, selection, hub, checks), selection.TargetColumn));
         }
         if (!hasKey) throw new ArgumentException("Include the Hub hash key to preserve one row per Hub key.");
-        return new(target, mapping, "SELECT " + string.Join(", ", expressions) + " FROM " + Table(Schema(hub)) + " r0", Table(target),
-            string.Join(", ", target.Columns.Select(c => Q(c.Name))), checks);
+        var query = Table(Schema(hub), "r0");
+        query.Columns.AddRange(expressions);
+        return Plan(target, mapping, query, checks);
+    }
+
+    private void ValidateStageCoverage(GXCreateMartRequest request, GXMartPreview preview)
+    {
+        var stage = mappings.FirstOrDefault(m => m.ObjectType == DataVaultObjectType.Staging &&
+            SameTable(Target(m).Name, request.SourceTable));
+        if (stage is null) return;
+
+        static bool Technical(GXDataVaultColumnMapping c) => c.Role is
+            DataVaultColumnRole.LoadDate or DataVaultColumnRole.RecordSource or
+            DataVaultColumnRole.HashDiff or DataVaultColumnRole.HashKey or
+            DataVaultColumnRole.LinkHashKey or DataVaultColumnRole.ParentHashKey;
+
+        var required = stage.Columns
+            .Where(c => !Technical(c) && !string.IsNullOrWhiteSpace(c.SourceColumn))
+            .Select(c => c.SourceColumn)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selected = request.Definition!.Columns
+            .Select(s => mappings.FirstOrDefault(m => m.Id == s.MappingId)?.Columns
+                .FirstOrDefault(c => Same(c.TargetColumn, s.Column) || Same(c.SourceColumn, s.Column))?.SourceColumn)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = required.Where(c => !selected.Contains(c)).OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToArray();
+        var extra = selected.Where(c => !required.Contains(c)).OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (missing.Length != 0 || extra.Length != 0)
+        {
+            var details = new List<string>();
+            if (missing.Length != 0) details.Add("missing: " + string.Join(", ", missing));
+            if (extra.Length != 0) details.Add("not in Stage: " + string.Join(", ", extra));
+            throw new ArgumentException("Information Mart columns must exactly match the nontechnical Stage columns through the Data Vault model (" + string.Join("; ", details) + ").");
+        }
+    }
+
+    private GXInformationMartPlan BuildReference(GXCreateMartRequest request)
+    {
+        var reference = mappings.SingleOrDefault(m => m.ObjectType == DataVaultObjectType.Reference &&
+            Same(Target(m).Name, request.Definition.SourceReference));
+        if (reference is null) throw new ArgumentException("Select an existing Reference mapping as the Mart source.");
+        var schema = Schema(reference);
+        var key = reference.Columns.SingleOrDefault(c => c.Role == DataVaultColumnRole.BusinessKey);
+        if (key is null) throw new ArgumentException("The Reference mapping must have a Business Key.");
+        var selected = request.Definition.Columns;
+        if (selected.Count == 0) throw new ArgumentException("Select at least one Reference column.");
+        var target = new GXTableSchema { Name = request.TargetTable, Schema = schema.Schema };
+        var mapping = new GXDataVaultTableMapping { SourceTable = reference.TargetTable, TargetTable = new() { Name = request.TargetTable }, ObjectType = DataVaultObjectType.InformationMart, Schedule = request.Schedule };
+        var selectedColumns = new List<GXColumnSchema>();
+        foreach (var selection in selected)
+        {
+            var column = reference.Columns.SingleOrDefault(c => Same(c.TargetColumn, selection.Column));
+            var physical = schema.Columns.SingleOrDefault(c => Same(c.Name, selection.Column));
+            if (column is null || physical is null) throw new ArgumentException($"Reference column '{selection.Column}' was not found.");
+            mapping.Columns.Add(new() { SourceMappingId = reference.Id, SourceColumn = selection.Column, TargetColumn = selection.TargetColumn, Role = column.Role == DataVaultColumnRole.BusinessKey ? DataVaultColumnRole.HashKey : DataVaultColumnRole.Attribute });
+            target.Columns.Add(new() { Name = selection.TargetColumn, Type = physical.Type, DbType = physical.DbType, MaxLength = physical.MaxLength, IsPrimaryKey = column.Role == DataVaultColumnRole.BusinessKey, IsNullable = column.Role != DataVaultColumnRole.BusinessKey });
+            selectedColumns.Add(physical);
+        }
+        if (!mapping.Columns.Any(c => c.Role == DataVaultColumnRole.HashKey)) throw new ArgumentException("Include the Reference Business Key.");
+        var query = GXSelectArgs.Select(selectedColumns);
+        query.Distinct = true;
+        return Plan(target, mapping, query, []);
+    }
+
+    private GXInformationMartPlan BuildLinkGrain(GXCreateMartRequest request)
+    {
+        var link = mappings.SingleOrDefault(m => m.ObjectType == DataVaultObjectType.Link && Same(Target(m).Name, request.Definition.SourceLink));
+        if (link is null) throw new ArgumentException("Select an existing Link mapping as the Mart source.");
+        var schema = Schema(link);
+        var key = link.Columns.SingleOrDefault(c => c.Role == DataVaultColumnRole.LinkHashKey);
+        if (key is null) throw new ArgumentException("The Link mapping must have a Link Hash Key.");
+        if (request.Definition.Columns.Count == 0) throw new ArgumentException("Select at least one Link column.");
+        var target = new GXTableSchema { Name = request.TargetTable, Schema = schema.Schema };
+        var mapping = new GXDataVaultTableMapping { SourceTable = link.TargetTable, TargetTable = new() { Name = request.TargetTable }, ObjectType = DataVaultObjectType.InformationMart, Schedule = request.Schedule };
+        var selectedColumns = new List<GXColumnSchema>();
+        foreach (var selection in request.Definition.Columns)
+        {
+            var column = link.Columns.SingleOrDefault(c => Same(c.TargetColumn, selection.Column));
+            var physical = schema.Columns.SingleOrDefault(c => Same(c.Name, selection.Column));
+            if (column is null || physical is null) throw new ArgumentException($"Link column '{selection.Column}' was not found.");
+            mapping.Columns.Add(new() { SourceMappingId = link.Id, SourceColumn = selection.Column, TargetColumn = selection.TargetColumn, Role = column.Role == DataVaultColumnRole.LinkHashKey ? DataVaultColumnRole.HashKey : DataVaultColumnRole.Attribute });
+            target.Columns.Add(new() { Name = selection.TargetColumn, Type = physical.Type, DbType = physical.DbType, MaxLength = physical.MaxLength, IsPrimaryKey = column.Role == DataVaultColumnRole.LinkHashKey, IsNullable = column.Role != DataVaultColumnRole.LinkHashKey });
+            selectedColumns.Add(physical);
+        }
+        if (!mapping.Columns.Any(c => c.Role == DataVaultColumnRole.HashKey)) throw new ArgumentException("Include the Link Hash Key.");
+        var query = GXSelectArgs.Select(selectedColumns);
+        query.Distinct = true;
+        return Plan(target, mapping, query, []);
     }
 
     public static bool HasColumnMappings(GXDataVaultTableMapping mapping) =>
@@ -263,11 +413,31 @@ public sealed class GXInformationMartBuilder(
 
     public GXInformationMartPlan Build(GXDataVaultTableMapping mapping)
     {
-        var keys = mapping.Columns.Where(c => c.Role == DataVaultColumnRole.HashKey).ToList();
+        var sourceIds = mapping.Columns.Where(c => c.SourceMappingId.HasValue && c.SourceMappingId != Guid.Empty)
+            .Select(c => c.SourceMappingId!.Value).Distinct().ToArray();
+        // Legacy Stage-direct mappings remain readable for refresh/migration. New Mart
+        // definitions are validated by Build(GXCreateMartRequest) and must use the
+        // Data Vault graph, so no new direct Stage-to-Mart path can be created.
+        if (mapping.ObjectType == DataVaultObjectType.InformationMart &&
+            mapping.Columns.Count != 0 && mapping.Columns.All(c => c.SourceMappingId.HasValue && c.SourceMappingId != Guid.Empty) &&
+            sourceIds.Length == 1 && sourceIds[0] is Guid sourceId &&
+            mappings.SingleOrDefault(m => m.Id == sourceId && m.ObjectType == DataVaultObjectType.Staging) is { } stage)
+        {
+            return BuildStageDirect(mapping, stage);
+        }
+        if (mapping.ObjectType == DataVaultObjectType.InformationMart &&
+            mapping.Columns.Count != 0 && mapping.Columns.All(c => c.SourceMappingId.HasValue && c.SourceMappingId != Guid.Empty) &&
+            sourceIds.Length == 1 && sourceIds[0] is Guid rawSourceId &&
+            mappings.SingleOrDefault(m => m.Id == rawSourceId && m.ObjectType == DataVaultObjectType.Link) is { } link &&
+            mapping.Columns.Any(c => c.Role == DataVaultColumnRole.LinkHashKey))
+        {
+            return BuildLinkDirect(mapping, link);
+        }
+        var keys = mapping.Columns.Where(c => c.Role is DataVaultColumnRole.HashKey or DataVaultColumnRole.LinkHashKey).ToList();
         if (!HasColumnMappings(mapping) || keys.Count != 1 || mapping.Columns.Any(c => c.SourceMappingId is null || c.SourceMappingId == Guid.Empty))
             throw new ArgumentException("The Mart requires source mappings for every column and one root Hub key.");
-        var hub = mappings.SingleOrDefault(m => m.Id == keys[0].SourceMappingId && m.ObjectType == DataVaultObjectType.Hub)
-            ?? throw new ArgumentException("The Mart's root Hub mapping no longer exists.");
+        var hub = mappings.SingleOrDefault(m => m.Id == keys[0].SourceMappingId && m.ObjectType is (DataVaultObjectType.Hub or DataVaultObjectType.Link))
+            ?? throw new ArgumentException("The Mart's root Hub or Link mapping no longer exists.");
         var existing = GXMartIdentifiers.Normalize(describe(Target(mapping).Name));
         var plan = Build(new GXCreateMartRequest
         {
@@ -288,6 +458,67 @@ public sealed class GXInformationMartBuilder(
             Schedule = new() { Type = mapping.Schedule.Type, IntervalSeconds = mapping.Schedule.IntervalSeconds }
         });
         return ResolveTarget(plan) with { Mapping = mapping };
+    }
+
+    private GXInformationMartPlan BuildStageDirect(GXDataVaultTableMapping mapping, GXDataVaultTableMapping stage)
+    {
+        var keys = mapping.Columns.Where(c => c.Role == DataVaultColumnRole.BusinessKey).ToList();
+        if (keys.Count == 0) throw new ArgumentException("A Stage-direct Mart requires one or more BusinessKey columns.");
+        GXDataVaultColumnMapping loadDate = stage.Columns.SingleOrDefault(c => c.Role == DataVaultColumnRole.LoadDate)
+            ?? throw new ArgumentException($"Stage '{Target(stage).Name}' requires a LoadDate mapping.");
+        GXTableSchema source = Schema(stage);
+        GXTableSchema target = GXMartIdentifiers.Normalize(describe(Target(mapping).Name));
+        var outputs = mapping.Columns.Select(c => new
+        {
+            Source = Physical(stage, stage.Columns.Single(sc => Same(sc.SourceColumn, c.SourceColumn)).TargetColumn).Name,
+            Target = Physical(mapping, c.TargetColumn).Name
+        }).ToList();
+        string[] keysNames = keys.Select(c => outputs.Single(o => Same(o.Target, c.TargetColumn)).Source).ToArray();
+        string date = Physical(stage, loadDate.TargetColumn).Name;
+        var ranked = Table(source, "s");
+        ranked.Columns.AddRange(outputs.Select(o => (GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "s"), o.Target)));
+        var partitionColumns = keysNames.Select(k => (object)source.Columns.Single(c => c.Name == k)).ToArray();
+        var dateColumn = source.Columns.Single(c => c.Name == date);
+        System.Linq.Expressions.Expression<Func<bool>> rowNumber = () =>
+            GXSql.RowNumber(GXSql.PartitionBy(partitionColumns), GXSql.OrderByDescending(dateColumn));
+        ranked.Columns.Add(rowNumber.Body, "rn");
+        var query = GXSelectArgs.From(() => GXSql.As(GXSql.Subquery<object>(ranked), "r"));
+        var rankColumn = new GXColumnSchema { Name = "rn", Type = typeof(long) };
+        query.Where.FilterBy(new (GXColumnSchema Column, object? Value)[] { (rankColumn, 1) }.AsEnumerable());
+        var rankedSchema = new GXTableSchema { Name = "ranked" };
+        foreach (var output in outputs)
+            rankedSchema.Columns.Add(new GXColumnSchema
+            {
+                Name = output.Target, Parent = rankedSchema,
+                Type = source.Columns.Single(c => c.Name == output.Source).Type
+            });
+        query.Columns.AddRange(rankedSchema.Columns.Select(c => (GXMetadataQueries.Column(c, "r"), (string?)null)));
+        var latest = Table(source, "latest").Filter(GXSqlExpressions.And(keysNames.Select(k => GXSqlExpressions.Equal(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == k), "latest"), GXMetadataQueries.Column(source.Columns.Single(c => c.Name == k), "s"))).ToArray()));
+        latest.Columns.Add(GXSqlExpressions.MaxExpression(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == date), "latest")));
+        var conflicting = Table(source, "conflicting");
+        conflicting.Columns.Add(GXSqlExpressions.Integer(1));
+        var differences = outputs.Select(o => GXSqlExpressions.Or(
+            GXSqlExpressions.NotEqual(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "conflicting"), GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "s")),
+            GXSqlExpressions.And(GXSqlExpressions.IsNull(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "conflicting")), GXSqlExpressions.IsNull(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "s"), true)),
+            GXSqlExpressions.And(GXSqlExpressions.IsNull(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "conflicting"), true), GXSqlExpressions.IsNull(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == o.Source), "s"))))).ToArray();
+        conflicting.Where.Set(GXSqlExpressions.And(GXSqlExpressions.And(keysNames.Select(k => GXSqlExpressions.Equal(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == k), "conflicting"), GXMetadataQueries.Column(source.Columns.Single(c => c.Name == k), "s"))).ToArray()),
+            GXSqlExpressions.Equal(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == date), "conflicting"), GXMetadataQueries.Column(source.Columns.Single(c => c.Name == date), "s")), GXSqlExpressions.Or(differences)));
+        var check = Table(source, "s").Filter(GXSqlExpressions.And(GXSqlExpressions.Equal(GXMetadataQueries.Column(source.Columns.Single(c => c.Name == date), "s"), GXSubqueryExpressions.Scalar<object?>(latest)), GXSqlExpressions.ExistsExpression(conflicting)));
+        check.Columns.Add(GXSqlExpressions.CountExpression());
+        return Plan(target, mapping, query, [check], outputs.Select(o => o.Target).ToArray());
+    }
+
+    private GXInformationMartPlan BuildLinkDirect(GXDataVaultTableMapping mapping, GXDataVaultTableMapping link)
+    {
+        GXTableSchema target = GXMartIdentifiers.Normalize(describe(Target(mapping).Name));
+        var columns = mapping.Columns.Select(c => new
+        {
+            Source = Physical(link, link.Columns.Single(sc => Same(sc.SourceColumn, c.SourceColumn) || Same(sc.TargetColumn, c.SourceColumn)).TargetColumn).Name,
+            Target = Physical(mapping, c.TargetColumn).Name
+        }).ToList();
+        var query = Table(Schema(link), "r0").WithDistinct();
+        query.Columns.AddRange(columns.Select(c => (GXMetadataQueries.Column(Schema(link).Columns.Single(sc => sc.Name == c.Source), "r0"), c.Target)));
+        return Plan(target, mapping, query, [], columns.Select(c => c.Target).ToArray());
     }
 
     public GXInformationMartPlan ValidateExistingTarget(GXInformationMartPlan plan)
@@ -322,76 +553,84 @@ public sealed class GXInformationMartBuilder(
         return plan with
         {
             TargetSchema = existing,
-            TargetSql = Table(existing),
-            TargetColumnsSql = string.Join(", ", plan.TargetSchema.Columns.Select(column =>
-                Q(existing.Columns.Single(c => Same(c.Name, column.Name)).Name)))
+            Target = existing,
+            TargetColumns = plan.TargetColumns.Select(column => existing.Columns.Single(c => Same(c.Name, column)).Name).ToArray()
         };
     }
-    private string Expression(Node node, GXMartColumnSelection column, GXDataVaultTableMapping hub, List<string> checks)
+    private E Expression(Node node, GXMartColumnSelection column, GXDataVaultTableMapping hub, List<GXSelectArgs> checks)
     {
         if (node.Path.Count == 0)
         {
             if (column.Aggregation != Aggregation.None) throw new ArgumentException("Hub columns do not require aggregation.");
-            return "r0." + Q(Physical(hub, column.Column).Name);
+            return GXMetadataQueries.Column(Physical(hub, column.Column), "r0");
         }
-        List<string> conditions = [];
-        string from = "";
-        for (int i = 0; i < node.Path.Count; i++)
+        List<E> conditions = [];
+        GXSelectArgs? query = null;
+        for (int i = 0; i < node.Path.Count; ++i)
         {
             var edge = node.Path[i];
             string parent = i == 0 ? "r0" : "t" + i;
             string alias = "t" + (i + 1);
-            string join = parent + "." + Q(Physical(edge.Parent, edge.ParentKey.TargetColumn).Name) + " = " + alias + "." + Q(Physical(edge.Child, edge.ChildKey.TargetColumn).Name);
-            if (i == 0) { from = Table(Schema(edge.Child)) + " " + alias; conditions.Add(join); }
-            else from += " INNER JOIN " + Table(Schema(edge.Child)) + " " + alias + " ON " + join;
+            var join = GXSqlExpressions.Equal(GXMetadataQueries.Column(Physical(edge.Parent, edge.ParentKey.TargetColumn), parent),
+                GXMetadataQueries.Column(Physical(edge.Child, edge.ChildKey.TargetColumn), alias));
+            if (i == 0) { query = Table(Schema(edge.Child), alias); conditions.Add(join); }
+            else query!.Joins.AddInnerJoin(
+                GXMetadataQueries.JoinColumn(Physical(edge.Parent, edge.ParentKey.TargetColumn), parent),
+                GXMetadataQueries.JoinColumn(Physical(edge.Child, edge.ChildKey.TargetColumn), alias));
             if (edge.Child.ObjectType == DataVaultObjectType.Satellite)
             {
                 var load = edge.Child.Columns.Where(c => c.Role == DataVaultColumnRole.LoadDate).ToArray();
                 var parents = edge.Child.Columns.Where(c => c.Role == DataVaultColumnRole.ParentHashKey).ToArray();
                 if (load.Length != 1 || parents.Length == 0) throw new ArgumentException($"Satellite '{Target(edge.Child).Name}' requires parent keys and one LoadDate mapping.");
-                string date = Q(Physical(edge.Child, load[0].TargetColumn).Name);
-                var keys = parents.Select(p => Q(Physical(edge.Child, p.TargetColumn).Name)).ToArray();
-                conditions.Add($"{alias}.{date} = (SELECT MAX(latest.{date}) FROM {Table(Schema(edge.Child))} latest WHERE " +
-                    string.Join(" AND ", keys.Select(k => $"latest.{k} = {alias}.{k}")) + ")");
+                string date = Physical(edge.Child, load[0].TargetColumn).Name;
+                var latest = Table(Schema(edge.Child), "latest").Filter(GXSqlExpressions.And(parents.Select(p => Physical(edge.Child, p.TargetColumn).Name)
+                        .Select(k => GXSqlExpressions.Equal(GXMetadataQueries.Column(Schema(edge.Child).Columns.Single(c => c.Name == k), "latest"), GXMetadataQueries.Column(Schema(edge.Child).Columns.Single(c => c.Name == k), alias))).ToArray()));
+                latest.Columns.Add(GXSqlExpressions.MaxExpression(GXMetadataQueries.Column(Schema(edge.Child).Columns.Single(c => c.Name == date), "latest")));
+                conditions.Add(GXSqlExpressions.Equal(GXMetadataQueries.Column(Schema(edge.Child).Columns.Single(c => c.Name == date), alias), GXSubqueryExpressions.Scalar<object?>(latest)));
             }
         }
-        string expression = "t" + node.Path.Count + "." + Q(Physical(node.GXDataVaultTableMapping, column.Column).Name);
-        string suffix = " FROM " + from + " WHERE " + string.Join(" AND ", conditions);
+        query!.Where.Set(GXSqlExpressions.And(conditions.ToArray()));
+        E expression = GXMetadataQueries.Column(Physical(node.GXDataVaultTableMapping, column.Column), "t" + node.Path.Count);
         if (column.Aggregation == Aggregation.None)
-            checks.Add("SELECT COUNT(*) FROM " + Table(Schema(hub)) + " r0 WHERE (SELECT COUNT(*)" + suffix + ") > 1");
+        {
+            var count = Table(Schema(node.Path[0].Child), "t1");
+            count.Where.Append(query.Where);
+            count.Joins.AddRange(query.Joins);
+            count.Columns.Add(GXSqlExpressions.CountExpression());
+            var check = Table(Schema(hub), "r0").Filter(GXSqlExpressions.Greater(GXSubqueryExpressions.Scalar<long>(count), GXSqlExpressions.Integer(1)));
+            check.Columns.Add(GXSqlExpressions.CountExpression());
+            checks.Add(check);
+        }
         else expression = column.Aggregation switch
         {
-            Aggregation.Count => "COUNT(" + expression + ")",
-            Aggregation.CountDistinct => "COUNT(DISTINCT " + expression + ")",
-            Aggregation.Average => "AVG(CAST(" + expression + " AS FLOAT))",
-            Aggregation.Min => "MIN(" + expression + ")",
-            Aggregation.Max => "MAX(" + expression + ")",
+            Aggregation.Count => GXSqlExpressions.CountExpression(expression),
+            Aggregation.CountDistinct => GXSqlExpressions.CountDistinct(expression),
+            Aggregation.Average => GXSqlExpressions.Average(expression),
+            Aggregation.Min => GXSqlExpressions.MinExpression(expression),
+            Aggregation.Max => GXSqlExpressions.MaxExpression(expression),
             _ => throw new ArgumentException("Unsupported aggregation.")
         };
-        return "(SELECT " + expression + suffix + ")";
+        query.Columns.Add(expression);
+        return GXSubqueryExpressions.Scalar<object?>(query);
     }
 
     public static async Task<int> PopulateAsync(DbConnection connection, DbTransaction transaction, GXInformationMartPlan plan, CancellationToken cancellationToken,
         bool replace = false)
     {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        foreach (var sql in plan.CardinalityChecks)
+        foreach (var check in plan.Checks)
         {
-            command.CommandText = sql;
-            if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 0)
+            if ((await new GXDbConnection(connection).SelectAsync<long>(transaction, check, cancellationToken)).Single() != 0)
                 throw new InvalidOperationException("A mart column has multiple current rows per Hub key. Correct the mapping or choose an aggregation.");
         }
         if (replace)
         {
-            command.CommandText = "DELETE FROM " + plan.TargetSql;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await new GXDbConnection(connection).DeleteAsync(transaction, GXDeleteArgs.DeleteAll(plan.Target), cancellationToken);
         }
-        command.CommandText = "INSERT INTO " + plan.TargetSql + " (" + plan.TargetColumnsSql + ") " + plan.SelectSql;
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        command.CommandText = "SELECT COUNT(*) FROM " + plan.TargetSql;
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+        await new GXDbConnection(connection).InsertAsync(transaction,
+            GXInsertArgs.Insert(plan.Query, GXSchemaColumns.Columns(plan.Target, plan.TargetColumns)), cancellationToken);
+        var count = GXSelectArgs.Select(plan.Target.Columns);
+        count.Columns.Clear();
+        count.Columns.Add(GXSqlExpressions.CountExpression());
+        return checked((int)(await new GXDbConnection(connection).SelectAsync<long>(transaction, count, cancellationToken)).Single());
     }
 }
-
-

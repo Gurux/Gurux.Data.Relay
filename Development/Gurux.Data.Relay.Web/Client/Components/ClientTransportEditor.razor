@@ -34,14 +34,13 @@
 @using Gurux.Data.Relay.Shared
 @using Gurux.Data.Relay.Shared.Enums
 @using Gurux.Data.Relay.Web.Client.Enums
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 
 <PageTitle>@Title</PageTitle>
 <section class="panel">
     <h2>@Title</h2>
-    @if (!string.IsNullOrEmpty(_message))
-    {
-        <p class="notice" role="alert">@_message</p>
-    }
+
     @if (Session != null)
     {
         @if (!string.IsNullOrEmpty(Session.TableName))
@@ -57,7 +56,7 @@
                 <button class="btn btn-danger" disabled="@_saving" @onclick="DeleteAsync">Delete transport</button>
             }
         }
-        else
+        else if (_editContext != null)
         {
             <EditForm EditContext="_editContext">
                 <DataAnnotationsValidator />
@@ -191,6 +190,7 @@
 </section>
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     [Parameter] public bool UseTopMenu { get; set; }
 
     [Inject]
@@ -247,12 +247,14 @@
 
     private async Task PersistAsync(bool delete)
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         if (_saving || (!delete && !_editContext.Validate()))
         {
             return;
         }
         _saving = true;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         try
         {
             if (OnSettingsSaved.HasDelegate)
@@ -266,7 +268,7 @@
         }
         catch (Exception ex)
         {
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
         finally
         {

@@ -33,23 +33,17 @@
 
 @using Gurux.Data.Relay.Shared
 @using Gurux.Data.Relay.Web.Client.Services
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 
-@if (_loading)
-{
-    <p>Loading data sources...</p>
-}
-else if (_error is not null)
-{
-    <div class="alert alert-danger" role="alert">@_error</div>
-}
-else
+@if (_error is null)
 {
     <section class="card mb-3">
         <div class="card-body">
             <h3 class="h5">Add data source</h3>
             <label class="form-label" for="data-source-provider">Data source provider</label>
-            <select id="data-source-provider" class="form-select" @bind="_selectedProvider">
+            <select id="data-source-provider" class="form-select" @bind="_selectedProvider" @bind:after="ProviderChanged">
                 <option value="">Select a provider…</option>
                 @foreach (string provider in _overview.Providers)
                 {
@@ -66,10 +60,7 @@ else
     {
         @*<DlmsWrapperDataSourceEditor Saved="ReloadAsync" />*@
     }
-    else if (!string.IsNullOrWhiteSpace(_selectedProvider))
-    {
-        <div class="alert alert-warning" role="alert">This installed provider does not yet have a settings editor.</div>
-    }
+
     <p><strong>Installed providers:</strong> @(_overview.Providers.Count == 0 ? "None" : string.Join(", ", _overview.Providers))</p>
     @if (_overview.Sources.Count == 0)
     {
@@ -118,10 +109,17 @@ else
 }
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private GXDataSourceOverview _overview = new();
-    private bool _loading = true;
     private string? _error;
     private string _selectedProvider = "";
+    private string? _providerNotice;
+    private void ProviderChanged() => NotificationService.SetMessage(ref _providerNotice,
+        string.IsNullOrWhiteSpace(_selectedProvider) ||
+        _selectedProvider.Equals("modbus-tcp", StringComparison.OrdinalIgnoreCase) ||
+        _selectedProvider.Equals("dlms-wrapper", StringComparison.OrdinalIgnoreCase)
+            ? null : "This installed provider does not yet have a settings editor.",
+        _notificationKey + "provider", NotificationLevel.Warning);
 
     protected override async Task OnInitializedAsync()
     {
@@ -129,15 +127,17 @@ else
     }
     private async Task ReloadAsync()
     {
-        _loading = true;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         try { _overview = await Api.GetDataSourceOverviewAsync(CancellationToken.None); }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _loading = false; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _error, ex.Message, _notificationKey + "_error", NotificationLevel.Error); }
     }
     private async Task DeleteAsync(Guid id)
     {
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         try { await Api.DeleteDataSourceAsync(id, CancellationToken.None); await ReloadAsync(); }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _error, ex.Message, _notificationKey + "_error", NotificationLevel.Error); }
     }
     private static string ProviderLabel(string provider) => provider.ToLowerInvariant() switch
     {

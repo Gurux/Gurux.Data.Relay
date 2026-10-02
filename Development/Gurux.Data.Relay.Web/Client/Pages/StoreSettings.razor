@@ -58,6 +58,9 @@
     case 6:
         <HelpContext Topic="configuration-database" />
         break;
+    case 7:
+        <HelpContext Topic="configuration-database" />
+        break;
 }
 <div class="nav nav-tabs mb-3" role="tablist" aria-label="Settings sections">
     @for (int index = 0; index < _tabs.Length; ++index)
@@ -72,6 +75,9 @@
 </div>
 <div id="settings-panel-0" role="tabpanel" aria-labelledby="settings-tab-0" hidden="@(_activeTab != 0)">
     <StoreSettingsPanel />
+</div>
+<div id="settings-panel-7" role="tabpanel" aria-labelledby="settings-tab-7" hidden="@(_activeTab != 7)">
+    <McpStatusPanel />
 </div>
 <div id="settings-panel-1" role="tabpanel" aria-labelledby="settings-tab-1" hidden="@(_activeTab != 1)">
     <SettingsArchivePanel OnImported="@(() => ++_version)" />
@@ -96,6 +102,6 @@
 
 @code {
     private int _version, _activeTab;
-    private readonly string[] _tabs = ["Configuration database", "Import / Export", "Automatic column mappings", "Client CORS", "Server CORS", "Data Vault CORS", "Data sources"];
+    private readonly string[] _tabs = ["Configuration database", "Import / Export", "Automatic column mappings", "Client CORS", "Server CORS", "Data Vault CORS", "Data sources", "MCP"];
 }
 

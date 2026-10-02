@@ -34,6 +34,8 @@
 @using Gurux.Data.Relay.Configuration
 @using Gurux.Data.Relay.Shared
 @using Gurux.Data.Relay.Shared.Enums
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 
 @inject GXAdminApiClient Api
 
@@ -65,10 +67,7 @@
                 <button class="btn btn-secondary" disabled="@_resetting" @onclick="CancelReset">Cancel</button>
             </GXValidationDialog>
         }
-        @if (_notice is not null)
-        {
-            <p role="status">@_notice</p>
-        }
+
         <div class="actions-row">
             @if (Mode == "client")
             {
@@ -78,10 +77,7 @@
                 </label>
             }
         </div>
-        @if (_error != null)
-        {
-            <p class="notice" role="alert">@_error</p>
-        }
+
         @if (_state != null)
         {
             @if (Mode == "datavault")
@@ -196,6 +192,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "modestatepanel-" + Guid.NewGuid().ToString("N");
     [Inject] public IGXTopMenu TopMenu { get; set; } = default!;
     private bool _choosingResetTable;
@@ -216,7 +213,7 @@
     }
     private async Task OpenResetTableSelection()
     {
-        if (Mode != "client" || _resetting || _resetRequest != null || _loading) return;
+        if (Mode != "client" || _resetting || _resetRequest != null) return;
         await LoadAsync();
         _choosingResetTable = _error == null;
     }
@@ -271,11 +268,11 @@
         if (Mode != "client" || _resetRequest is not null || string.IsNullOrEmpty(table.LastCheckpointValue)) return;
         if (table.DatabaseIndex is not int index || index < 0 || index >= _databases.Count)
         {
-            _error = "Reload the state page to resolve the selected database.";
+            NotificationService.SetMessage(ref _error, "Reload the state page to resolve the selected database.", _notificationKey + "_error", NotificationLevel.Error);
             return;
         }
-        _error = null;
-        _notice = null;
+        NotificationService.SetMessage(ref _error, null, _notificationKey + "_error", NotificationLevel.Error);
+        NotificationService.SetMessage(ref _notice, null, _notificationKey + "_notice", NotificationLevel.Information);
         _choosingResetTable = false;
         _resetRequest = new() { DatabaseId = _databases[index].Id, StateTableName = table.Name, ConcurrencyStamp = table.ConcurrencyStamp };
     }
@@ -292,12 +289,15 @@
     private async Task ConfirmResetAsync()
     {
         if (_resetting || _resetRequest is null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_notice");
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         _resetting = true;
         try
         {
             await Api.ResetClientTableCheckpointAsync(_resetRequest, CancellationToken.None);
             _resetRequest = null;
-            _notice = "Transfer checkpoint reset. The next Run will send the table data again.";
+            NotificationService.SetMessage(ref _notice, "Transfer checkpoint reset. The next Run will send the table data again.", _notificationKey + "_notice", NotificationLevel.Success);
             await LoadAsync();
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -305,9 +305,9 @@
             _resetRequest = null;
             await LoadAsync();
             _choosingResetTable = _error == null;
-            _notice = "The table state changed. The latest state has been loaded. Select the table and confirm the reset again.";
+            NotificationService.SetMessage(ref _notice, "The table state changed. The latest state has been loaded. Select the table and confirm the reset again.", _notificationKey + "_notice", NotificationLevel.Warning);
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _error, ex.Message, _notificationKey + "_error", NotificationLevel.Error); }
         finally { _resetting = false; }
     }
     private IReadOnlyList<GXDatabase> _databases = [];
@@ -318,15 +318,15 @@
     private string DatabaseLabel(int? index) => index is int value && value >= 0 && value < _databases.Count
         ? $"{value + 1}: {_databases[value].Description ?? _databases[value].Type.ToString()}"
         : "Unknown";
-    private bool _loading;
     private string? _error;
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
     private async Task LoadAsync()
     {
-        _loading = true;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
+        NotificationService.SetMessage(ref _error, null, _notificationKey + "_error", NotificationLevel.Error);
         try
         {
             if (Mode is "client" or "datavault")
@@ -349,11 +349,7 @@
         }
         catch (Exception ex)
         {
-            _error = ex.Message;
-        }
-        finally
-        {
-            _loading = false;
+            NotificationService.SetMessage(ref _error, ex.Message, _notificationKey + "_error", NotificationLevel.Error);
         }
     }
 

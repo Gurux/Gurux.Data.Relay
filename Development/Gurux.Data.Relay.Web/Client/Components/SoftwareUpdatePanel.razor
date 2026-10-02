@@ -1,0 +1,65 @@
+@inject IGXProgress Progress
+@implements IDisposable
+@inject GXSoftwareUpdateClient Updates
+
+<section class="mb-4" aria-labelledby="software-update-heading">
+    <h2 id="software-update-heading">Software update</h2>
+    @if (!string.IsNullOrEmpty(Updates.Status.CurrentVersion))
+    {
+        <p>Current version: <strong>@Updates.Status.CurrentVersion</strong></p>
+    }
+    @if (Updates.Status.CheckedAt is { } checkedAt)
+    {
+        <p>Latest version: <strong>@Updates.Status.LatestVersion</strong></p>
+        @if (Updates.Status.UpdateAvailable)
+        {
+            <p>A new software version is available.</p>
+        }
+        else if (Updates.Status.Error is null)
+        {
+            <p>Software is up to date.</p>
+        }
+        @if (ReleaseUrl is { } releaseUrl)
+        {
+            <p><a href="@releaseUrl" target="_blank" rel="noopener noreferrer">View release and downloads</a></p>
+        }
+        <p class="text-muted">Last successful check: @checkedAt.ToLocalTime().ToString("g")</p>
+    }
+    else if (Updates.Status.Error is null)
+    {
+        <p>Software update check has not completed yet.</p>
+    }
+    <button class="btn btn-primary" disabled="@Progress.IsBusy" @onclick="CheckAsync">
+        @(Progress.IsBusy ? "Checking…" : "Check for updates")
+    </button>
+</section>
+
+@code {
+    private readonly CancellationTokenSource _stopping = new();
+    private string? ReleaseUrl => Uri.TryCreate(Updates.Status.ReleaseUrl, UriKind.Absolute, out var uri)
+        && uri.Scheme == Uri.UriSchemeHttps && uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+        ? uri.AbsoluteUri : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Updates.Changed += OnChanged;
+        try { await Updates.RefreshAsync(false, _stopping.Token); }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+    }
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task CheckAsync()
+    {
+        if (Progress.IsBusy) return;
+        try { await Updates.RefreshAsync(true, _stopping.Token); }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+    }
+
+    public void Dispose()
+    {
+        Updates.Changed -= OnChanged;
+        _stopping.Cancel();
+        _stopping.Dispose();
+    }
+}

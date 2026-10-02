@@ -35,12 +35,14 @@
 @using Gurux.Data.Relay.Shared.Enums
 @using Gurux.Data.Relay.Web.Client.Enums
 @using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 
 @inject GXAdminApiClient Api
 
 <GXLiveView Mode="client"
             Kinds="@(GXRelayChangeKind.Configuration | GXRelayChangeKind.State)"
-            IsEditing="@(() => _action != CrudAction.None || _schemaDialog || _schemaBusy)"
+            IsEditing="@(() => _action != CrudAction.None || _schemaDialog || _schemaBusy || _dataTableName != null)"
             OnChanged="LoadAsync"
             OnStateChanged="RefreshStateAsync">
     <section class="panel">
@@ -49,10 +51,7 @@
             <GXValidationDialog Model="@this" Title="Import database settings" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseSchemaImport">
                 <p>Select a client settings JSON file to replace the table settings and transport routes for @_schemaDatabaseLabel.</p>
                 <InputFile OnChange="ImportSchemaAsync" accept=".json,application/json" disabled="@_schemaBusy" />
-                @if (!string.IsNullOrEmpty(_schemaError))
-                {
-                    <p class="text-danger" role="alert">@_schemaError</p>
-                }
+
             </GXValidationDialog>
         }
         @if (_describedSchema is not null)
@@ -63,11 +62,16 @@
                 </GXValidationDialog>
             </div>
         }
-        <h2>@(_action == CrudAction.Create ? "Add table" : _action == CrudAction.Update ? "Edit table" : _action == CrudAction.Delete ? "Delete table" : "Client Tables")</h2>
-        @if (!string.IsNullOrWhiteSpace(_message))
+        @if (_dataTableName is not null)
         {
-            <p class="notice" role="alert">@_message</p>
+            <div class="table-structure-dialog">
+                <GXValidationDialog Model="@this" Title="@($"Data: {_dataTableName}")" OkButtonTitle="" CancelButtonTitle="Close" OnCancel="CloseData">
+                    <ModeTableDataPanel @key="(_dataDatabaseId, _dataTableName)" Mode="client" InitialDatabaseId="_dataDatabaseId" InitialTable="@_dataTableName" />
+                </GXValidationDialog>
+            </div>
         }
+        <h2>@(_action == CrudAction.Create ? "Add table" : _action == CrudAction.Update ? "Edit table" : _action == CrudAction.Delete ? "Delete table" : "Client Tables")</h2>
+
         @if (_action == CrudAction.None)
         {
             @if (_schemaExportUri is not null)
@@ -120,6 +124,7 @@
                     <td>@(table.NextTransferTime?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</td>
                 </ItemContent>
                 <MenuContent>
+                    <ContextMenuItem Text="Data" Image="oi oi-grid-three-up" OnClick="OpenData" />
                     <ContextMenuItem Text="Edit" Image="oi oi-pencil" OnClick="() => OpenEditDialogAsync(_activeTable)" />
                     <ContextMenuItem Text="Delete" Image="oi oi-trash" OnClick="@ConfirmRemoveTable" />
                     <ContextMenuItem Text="Test server connection" Image="oi oi-pulse" OnClick="@PingAsync" />
@@ -138,14 +143,14 @@
             <button class="btn btn-danger" disabled="@_saving" @onclick="OnRemoveDialogConfirmedAsync">Delete table</button>
             <button class="btn btn-secondary" disabled="@_saving" @onclick="OnRemoveDialogCancelledAsync">Cancel</button>
         }
-        else if (_activeTable != null && (_action is CrudAction.Create or CrudAction.Update))
+        else if (_activeTable != null && _editContext != null && (_action is CrudAction.Create or CrudAction.Update))
         {
             @if (_action == CrudAction.Create && _availableTables.Count == 0)
             {
                 <p class="text-danger" role="alert">No tables found in the selected database. Create a table in the database first.</p>
             }
             <fieldset disabled="@_saving">
-                <EditForm EditContext="@TopMenu.EditContext">
+                <EditForm EditContext="@_editContext">
                     <div class="mb-2">
                         <h3>Configured tables</h3>
                         <TabControl>
@@ -286,10 +291,7 @@
                                         <label>Cron expression</label>
                                         <InputText class="form-control" @bind-Value="_activeTable.Schedule.Expression" @oninput="@(e => { _activeTable.Schedule.Expression = e.Value?.ToString() ?? string.Empty; ValidateCron(); })" @bind-Value:after="ValidateCron" />
                                         <small>Seconds minutes hours day month weekday (UTC). Example: 0 * * * * * — every minute.</small>
-                                        @if (_cronError != null)
-                                        {
-                                            <p class="text-danger" role="alert">@_cronError</p>
-                                        }
+
                                     </div>
                                 }
                             </TabPage>
@@ -302,6 +304,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "clienttablespanel-" + Guid.NewGuid().ToString("N");
     private TimeSpan? DailyScheduleTime
     {
@@ -325,6 +328,7 @@
     private readonly HashSet<string> _selectedKeys = new(StringComparer.OrdinalIgnoreCase);
     private GXDatabase? _activeDatabase;
     private GXTable? _activeTable;
+    private EditContext? _editContext;
     private string? _originalTableName;
     private GXTable<GXTable>? _table;
     private GXTable<string>? _columnsTable;
@@ -335,8 +339,8 @@
     private ScheduleType _scheduleType;
     private string? _cronError;
     private readonly GXTable _filter = new();
-    private void ValidateCron() => _cronError = _scheduleType == ScheduleType.Cron
-        ? GXCronSchedule.Validate(_activeTable?.Schedule.Expression) : null;
+    private void ValidateCron() => NotificationService.SetMessage(ref _cronError, _scheduleType == ScheduleType.Cron
+        ? GXCronSchedule.Validate(_activeTable?.Schedule.Expression) : null, _notificationKey + "_cronError", NotificationLevel.Error);
 
     private void OnScheduleChanged()
     {
@@ -383,8 +387,9 @@
     private void ShowEditMenu()
     {
         TopMenu.Clear();
-        TopMenu.EditContext = new EditContext(_activeTable!);
-        TopMenu.EditContext.MarkAsUnmodified();
+        _editContext = new EditContext(_activeTable!);
+        TopMenu.EditContext = _editContext;
+        _editContext.MarkAsUnmodified();
         TopMenu?.AddMenuItems([new GXMenuItem("Save", "Save",
     EventCallback.Factory.Create(this, OnEditDialogConfirmedAsync),
     UI.Components.Enums.EnableStyle.Modified),
@@ -394,6 +399,8 @@
 
     private async Task RefreshStateAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             var settings = _settings;
@@ -414,7 +421,7 @@
         }
         catch (Exception ex)
         {
-            _message = $"Could not refresh state: {ex.Message}";
+            NotificationService.SetMessage(ref _message, $"Could not refresh state: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
     }
     private async Task LoadAsync()
@@ -426,7 +433,7 @@
         _databases.AddRange(catalog.Select(database => _settings.Databases.FirstOrDefault(d => d.Id == database.Id) ?? database));
         _activeDatabase = _databases.FirstOrDefault(database => database.Id == selectedDatabaseId)
             ?? _databases.FirstOrDefault();
-        _message = $"Loaded {_databases.Count} client databases.";
+        NotificationService.SetMessage(ref _message, $"Loaded {_databases.Count} client databases.", _notificationKey + "_message", NotificationLevel.Information);
         await OnDatabaseChanged();
     }
 
@@ -439,7 +446,7 @@
         IReadOnlyList<string> names = await Api.GetTablesAsync(_activeDatabase, CancellationToken.None);
         _availableTables.AddRange(names);
         ++_sourceTablesVersion;
-        _message = $"Loaded {_availableTables.Count} source tables.";
+        NotificationService.SetMessage(ref _message, $"Loaded {_availableTables.Count} source tables.", _notificationKey + "_message", NotificationLevel.Information);
     }
 
     private async Task StartNewFromSourceAsync(string tableName)
@@ -456,12 +463,14 @@
         _selectedKeys.Clear();
         _originalTableName = null;
         _action = CrudAction.Create;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         await EditConfiguredTableAsync(new GXTable { Name = tableName });
     }
 
     private async Task EditConfiguredTableAsync(GXTable table)
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         ShowEditMenu();
         GXChangeTracking tracking = table.ChangeTracking;
         _changeTrackingType = tracking.Type;
@@ -473,7 +482,7 @@
         }
         catch (Exception ex)
         {
-            _message = $"Could not load columns for table {table.Name}: {ex.Message}";
+            NotificationService.SetMessage(ref _message, $"Could not load columns for table {table.Name}: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
     }
 
@@ -505,6 +514,8 @@
     private async Task SendTableActionAsync(bool schema)
     {
         if (_sending || _activeTable == null || _activeDatabase == null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         int databaseIndex = _settings.Databases.FindIndex(database => database.Id == _activeDatabase.Id);
         if (databaseIndex < 0)
         {
@@ -513,40 +524,52 @@
         string tableName = _activeTable.Name;
         GXClientTableRequest request = new() { DatabaseIndex = databaseIndex, TableName = tableName };
         _sending = true;
-        _message = schema ? $"Sending schema for {tableName}..." : $"Testing server connection and destination database for {tableName}...";
         try
         {
             if (schema) await Api.SendClientTableSchemaAsync(request, CancellationToken.None);
             else await Api.PingClientTableAsync(request, CancellationToken.None);
-            _message = schema ? $"Schema for {tableName} acknowledged by all configured servers."
-                : $"Server connection and destination database configuration verified for {tableName} on all configured servers.";
+            NotificationService.SetMessage(ref _message, schema ? $"Schema for {tableName} acknowledged by all configured servers."
+                : $"Server connection and destination database configuration verified for {tableName} on all configured servers.", _notificationKey + "_message", NotificationLevel.Success);
         }
         catch (Exception ex)
         {
-            _message = schema ? $"Could not send schema for {tableName}: {ex.Message}"
-                : $"Server connection test failed for {tableName}: {ex.Message}";
+            NotificationService.SetMessage(ref _message, schema ? $"Could not send schema for {tableName}: {ex.Message}"
+                : $"Server connection test failed for {tableName}: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
         finally { _sending = false; }
     }
 
     private GXTableSchema? _describedSchema;
     private bool _describing;
+    private Guid _dataDatabaseId;
+    private string? _dataTableName;
+
+    private void OpenData()
+    {
+        if (_activeDatabase is null || _activeTable is null) return;
+        _dataDatabaseId = _activeDatabase.Id;
+        _dataTableName = _activeTable.Name;
+    }
+
+    private void CloseData() => _dataTableName = null;
 
     private async Task DescribeAsync()
     {
         if (_describing || _activeTable is null || _activeDatabase is null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         var database = _activeDatabase;
         string name = _activeTable.Name;
         _describing = true;
         _describedSchema = null;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         try
         {
             var schema = await Api.GetColumnsAsync(database, name, CancellationToken.None);
             if (string.IsNullOrEmpty(schema.Name)) schema.Name = name;
             _describedSchema = schema;
         }
-        catch (Exception ex) { _message = $"Could not describe {name}: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, $"Could not describe {name}: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error); }
         finally { _describing = false; }
     }
 
@@ -563,6 +586,8 @@
     private async Task ExportSchemaAsync()
     {
         if (_schemaBusy || _activeDatabase is null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         var databaseId = _activeDatabase.Id;
         string name = GetDatabaseLabel(_activeDatabase, _databases.IndexOf(_activeDatabase));
         _schemaBusy = true;
@@ -573,9 +598,9 @@
             string json = GXClientDatabaseSettings.Export(settings, databaseId);
             _schemaExportFileName = $"{name}.client.settings.json";
             _schemaExportUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(json);
-            _message = "Database settings export ready. Select Download database settings to save the JSON file.";
+            NotificationService.SetMessage(ref _message, "Database settings export ready. Select Download database settings to save the JSON file.", _notificationKey + "_message", NotificationLevel.Information);
         }
-        catch (Exception ex) { _message = $"Could not export database settings: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, $"Could not export database settings: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error); }
         finally { _schemaBusy = false; }
     }
 
@@ -584,12 +609,12 @@
         if (_schemaBusy) return;
         if (_activeDatabase is null)
         {
-            _message = "Select a database first.";
+            NotificationService.SetMessage(ref _message, "Select a database first.", _notificationKey + "_message", NotificationLevel.Information);
             return;
         }
         _schemaDatabaseId = _activeDatabase.Id;
         _schemaDatabaseLabel = GetDatabaseLabel(_activeDatabase, _databases.IndexOf(_activeDatabase));
-        _schemaError = null;
+        NotificationService.SetMessage(ref _schemaError, null, _notificationKey + "_schemaError", NotificationLevel.Error);
         _schemaDialog = true;
     }
 
@@ -601,8 +626,11 @@
     private async Task ImportSchemaAsync(InputFileChangeEventArgs args)
     {
         if (_schemaBusy) return;
+        NotificationService.RemoveByKey(_notificationKey + "_schemaError");
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _schemaBusy = true;
-        _schemaError = null;
+        NotificationService.SetMessage(ref _schemaError, null, _notificationKey + "_schemaError", NotificationLevel.Error);
         try
         {
             await using var stream = args.File.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
@@ -616,12 +644,12 @@
             try { await LoadAsync(); }
             catch (Exception ex)
             {
-                _message = $"Database settings imported, but the table list could not be refreshed: {ex.Message}";
+                NotificationService.SetMessage(ref _message, $"Database settings imported, but the table list could not be refreshed: {ex.Message}", _notificationKey + "_message", NotificationLevel.Warning);
                 return;
             }
-            _message = "Database settings imported.";
+            NotificationService.SetMessage(ref _message, "Database settings imported.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _schemaError = $"Could not import database settings: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _schemaError, $"Could not import database settings: {ex.Message}", _notificationKey + "_schemaError", NotificationLevel.Error); }
         finally { _schemaBusy = false; }
     }
 
@@ -631,6 +659,7 @@
     {
         if (_saving) return Task.CompletedTask;
         TopMenu?.Clear();
+        _editContext = null;
         _activeTable = null;
         _action = CrudAction.None;
         return Task.CompletedTask;
@@ -640,6 +669,8 @@
     private async Task PersistTableAsync(bool delete)
     {
         if (_saving) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         if (_activeTable == null || _activeDatabase == null)
         {
             return;
@@ -647,7 +678,7 @@
         if (!delete)
         {
             ValidateCron();
-            if (_cronError != null) { _message = _cronError; return; }
+            if (_cronError != null) { NotificationService.SetMessage(ref _message, _cronError, _notificationKey + "_message", NotificationLevel.Error); return; }
         }
         try
         {
@@ -677,13 +708,14 @@
             _settings = pending;
             LoadConfiguredTablesForCurrentDatabase();
             _action = CrudAction.None;
-            _message = "Client settings saved.";
+            NotificationService.SetMessage(ref _message, "Client settings saved.", _notificationKey + "_message", NotificationLevel.Success);
             TopMenu?.Clear();
+            _editContext = null;
         }
         catch (Exception ex)
         {
             LoadConfiguredTablesForCurrentDatabase();
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
         finally { _saving = false; }
     }
@@ -743,17 +775,21 @@
 
     private async Task OnDatabaseChanged()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _schemaExportUri = null;
         _activeTable = null;
         _availableTables.Clear();
         LoadConfiguredTablesForCurrentDatabase();
         try { await LoadAvailableTablesAsync(); }
-        catch (Exception ex) { _message = $"Could not load source tables: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, $"Could not load source tables: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error); }
         await Updated();
     }
 
     private async Task OnTableChanged()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _selectedColumns.Clear();
         _selectedKeys.Clear();
         if (_action == CrudAction.Create && _activeTable != null)
@@ -771,7 +807,7 @@
             }
             catch (Exception ex)
             {
-                _message = $"Could not load columns for table {_activeTable?.Name}: {ex.Message}";
+                NotificationService.SetMessage(ref _message, $"Could not load columns for table {_activeTable?.Name}: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
             }
         }
         // GXTable caches its provider result. Refresh it after the asynchronous schema load,

@@ -1,3 +1,4 @@
+@inject IGXProgress Progress
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -34,12 +35,15 @@
 @using System.Text
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Gurux.UI.Components.Enums
+
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 <HelpContext Topic="database-schema-import-and-export" />
 
 <GXValidationDialog Model="@this" Title="@(Importing ? "Import schema" : "Export schema")" OkButtonTitle="" CancelButtonTitle="" OnCancel="CloseAsync">
     <p><strong>Database:</strong> @(Database.Description ?? Database.Type.ToString())</p>
-    <fieldset disabled="@_busy">
+    <fieldset disabled="@Progress.IsBusy">
         @if (Importing)
         {
             <label>Schema JSON file <InputFile OnChange="ReadFileAsync" accept=".json,application/json" /></label>
@@ -67,10 +71,6 @@
         }
         <button type="button" class="btn btn-secondary" @onclick="CloseAsync">Close</button>
     </fieldset>
-    @if (_message is not null)
-    {
-        <p role="status">@_message</p>
-    }
     @if (_downloadUri is not null)
     {
         <a class="btn btn-outline-success" href="@_downloadUri" download="Gurux.Data.Relay.tables.schema.json">Download schema</a>
@@ -84,11 +84,9 @@
     [Parameter] public EventCallback OnClose { get; set; }
 
     private List<SchemaRow> _rows = [];
-    private bool _busy;
-    private string? _message;
     private string? _downloadUri;
 
-    private Task CloseAsync() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+    private Task CloseAsync() => Progress.IsBusy ? Task.CompletedTask : OnClose.InvokeAsync();
 
     private sealed class SchemaRow
     {
@@ -102,15 +100,15 @@
     protected override async Task OnInitializedAsync()
     {
         if (Importing) return;
-        _busy = true;
+        NotificationService.RemoveByKey("Could not load database schema");
+
         try
         {
             var names = await Api.GetTablesAsync(Database, CancellationToken.None);
             _rows = names.Select(name => new SchemaRow { Name = name }).ToList();
-            if (_rows.Count == 0) _message = "No tables found in the selected database.";
+            if (_rows.Count == 0) NotificationService.Add(new GXNotificationItem(NotificationLevel.Information, "Database schema", "No tables found in the selected database.", Closable: true));
         }
-        catch (Exception ex) { _message = $"Could not load tables: {ex.Message}"; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not load database schema"); }
     }
 
     private ValueTask<ItemsProviderResult<SchemaRow>> GetRows(GXItemsProviderRequest request)
@@ -123,18 +121,18 @@
 
     private async Task ReadFileAsync(InputFileChangeEventArgs args)
     {
-        if (_busy) return;
-        _busy = true;
+        NotificationService.RemoveByKey("Could not read file (database schema)");
+
+        if (Progress.IsBusy) return;
+        using var progress = Progress.ProgressStart("Reading schema file…");
         _rows = [];
-        _message = null;
         try
         {
             await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
             using var reader = new StreamReader(stream);
             LoadSchemas(await reader.ReadToEndAsync());
         }
-        catch (Exception ex) { _message = $"Could not read schema file: {ex.Message}"; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not read file (database schema)"); }
     }
 
     private void LoadSchemas(string json)
@@ -162,19 +160,20 @@
             rows.Add(new SchemaRow { Name = fullName, Schema = table.Clone() });
         }
         _rows = rows;
-        _message = rows.Count == 0 ? "The file contains no tables." : null;
+        if (rows.Count == 0) NotificationService.Add(new GXNotificationItem(NotificationLevel.Information, "Database schema", "The file contains no tables.", Closable: true));
     }
 
     private async Task TransferAsync()
     {
-        if (_busy) return;
+        if (Progress.IsBusy) return;
+        NotificationService.RemoveByKey("Could not transfer (database schema)");
+
         var selected = _rows.Where(row => row.Selected && !row.Imported).ToArray();
         if (selected.Length == 0) return;
-        _busy = true;
         _downloadUri = null;
         int succeeded = 0;
         var exported = new List<JsonElement>();
-        try
+        using (Progress.ProgressStart("Transferring database schema…"))
         {
             foreach (var row in selected)
             {
@@ -196,14 +195,13 @@
                     row.Status = Importing ? "Imported" : "Exported";
                     ++succeeded;
                 }
-                catch (Exception ex) { row.Status = ex.Message; }
+                catch (Exception ex) { NotificationService.ReportError(ex, "Could not transfer (database schema)"); row.Status = ex.Message; }
             }
             if (!Importing && exported.Count > 0)
                 _downloadUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(
                     JsonSerializer.Serialize(exported, new JsonSerializerOptions { WriteIndented = true }));
-            _message = $"{succeeded} of {selected.Length} tables {(Importing ? "imported" : "exported")}.";
+            NotificationService.Add(new GXNotificationItem(succeeded == selected.Length ? NotificationLevel.Success : NotificationLevel.Warning, "Database schema", $"{succeeded} of {selected.Length} tables {(Importing ? "imported" : "exported")}.", Closable: true));
         }
-        finally { _busy = false; }
     }
 }
 

@@ -1,3 +1,5 @@
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -67,10 +69,7 @@
                     }
                 }
             }
-            @if (!string.IsNullOrEmpty(_message))
-            {
-                <p class="notice" role="alert">@_message</p>
-            }
+
         </ClientTransportEditor>
     }
     else
@@ -89,10 +88,7 @@
                     }
                 </select>
             }
-            @if (!string.IsNullOrEmpty(_message))
-            {
-                <p class="notice" role="alert">@_message</p>
-            }
+
             @if (IsServer)
             {
                 <div class="actions-row">
@@ -151,6 +147,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "modetransportspanel-" + Guid.NewGuid().ToString("N");
     [Inject]
     public IGXTopMenu TopMenu { get; set; } = default!;
@@ -195,17 +192,18 @@
     private async Task TestServerConnectionAsync()
     {
         if (IsServer || _testingConnection || _activeTransport is null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         var transport = _activeTransport;
         _testingConnection = true;
-        _message = $"Testing server connection for {transport.Description ?? transport.Type.ToString()}...";
         try
         {
             await Api.TestClientTransportConnectionAsync(transport.Id, CancellationToken.None);
-            _message = $"Server connection successful for {transport.Description ?? transport.Type.ToString()}.";
+            NotificationService.SetMessage(ref _message, $"Server connection successful for {transport.Description ?? transport.Type.ToString()}.", _notificationKey + "_message", NotificationLevel.Success);
         }
         catch (Exception ex)
         {
-            _message = $"Server connection test failed: {ex.Message}";
+            NotificationService.SetMessage(ref _message, $"Server connection test failed: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
         finally
         {
@@ -214,21 +212,22 @@
     }
     private async Task RunAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         if (IsServer || _running || _activeTransport is null)
         {
             return;
         }
         var transport = _activeTransport;
         _running = true;
-        _message = $"Sending data via {transport.Description ?? transport.Type.ToString()}...";
         try
         {
             await Api.RunClientTransportAsync(transport.Id, CancellationToken.None);
-            _message = $"Send completed for {transport.Description ?? transport.Type.ToString()}.";
+            NotificationService.SetMessage(ref _message, $"Send completed for {transport.Description ?? transport.Type.ToString()}.", _notificationKey + "_message", NotificationLevel.Success);
         }
         catch (Exception ex)
         {
-            _message = $"Could not send data: {ex.Message}";
+            NotificationService.SetMessage(ref _message, $"Could not send data: {ex.Message}", _notificationKey + "_message", NotificationLevel.Error);
         }
         finally { _running = false; }
     }
@@ -251,6 +250,8 @@
     private string DatabaseLabel(GXDatabase database) => string.IsNullOrWhiteSpace(database.Description) ? database.Type.ToString() : database.Description;
     private async Task LoadAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try
         {
             _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
@@ -263,7 +264,7 @@
         }
         catch (Exception ex)
         {
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
     }
     private GXSettings _databaseOptions = new();
@@ -279,7 +280,9 @@
 
     private async Task OpenAsync(GXTransport? transport, CrudAction action)
     {
-        _message = null;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         try
         {
             var catalog = await Api.GetDatabaseCatalogAsync(CancellationToken.None);
@@ -288,7 +291,7 @@
                 Databases = catalog.Select(database => _settings.Databases.FirstOrDefault(d => d.Id == database.Id) ?? database).ToList()
             };
         }
-        catch (Exception ex) { _message = ex.Message; return; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); return; }
         _selectedDatabaseId = transport?.Tables.FirstOrDefault()?.DatabaseId ?? _databaseOptions.Databases.FirstOrDefault()?.Id ?? Guid.Empty;
         _session = new GXTransportEditSession(_settings, transport == null ? null : _settings.Transports.IndexOf(transport));
         _action = action;
@@ -306,7 +309,7 @@
             catch (Exception ex)
             {
                 if (!ReferenceEquals(_session, session)) return;
-                _message += $"Could not load source tables for {DatabaseLabel(database)}: {ex.Message} ";
+                NotificationService.SetMessage(ref _message, _message + $"Could not load source tables for {DatabaseLabel(database)}: {ex.Message} ", _notificationKey + "_message", NotificationLevel.Error);
             }
         }
     }
@@ -321,6 +324,8 @@
 
     private async Task SaveAsync(GXSettings settings)
     {
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         if (_action != CrudAction.Delete)
         {
             GXTransport transport = settings.Transports.Single(t => t.Id == _session!.Draft.Id);
@@ -380,12 +385,12 @@
                 _session = new GXTransportEditSession(settings, transportIndex);
                 _action = CrudAction.Update;
             }
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
             return;
         }
         _settings = settings;
         Cancel();
-        _message = "Transport settings saved.";
+        NotificationService.SetMessage(ref _message, "Transport settings saved.", _notificationKey + "_message", NotificationLevel.Success);
     }
 
     private void NotifyMappingsChanged()
@@ -400,7 +405,7 @@
         _listMenuPending = true;
         _session = null;
         _action = CrudAction.None;
-        _message = null;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
     }
 }
 

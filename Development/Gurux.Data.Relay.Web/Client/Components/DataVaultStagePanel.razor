@@ -1,3 +1,4 @@
+@inject IGXProgress Progress
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -34,6 +35,9 @@
 @using Gurux.Data.Relay.Shared
 @using Gurux.Data.Relay.Shared.Enums
 
+@using Gurux.UI.Components.Enums
+
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 
 <section class="panel">
@@ -43,20 +47,13 @@
         <GXInputDropdown TValue="GXDatabase" Items="_databases" @bind-Value="_database" @bind-Value:after="LoadTablesAsync" class="form-select">
             <Template Context="database">@(database.Description ?? database.Type.ToString())</Template>
         </GXInputDropdown>
-        @if (_message != null)
-        {
-            <p role="status">@_message</p>
-        }
         <label class="d-block"><input type="checkbox" @bind="_showAll" @bind:after="OnShowAllChanged" /> Show all</label>
         @foreach (var table in VisibleTables)
         {
             <div><button type="button" class="@(table == _selected ? "btn btn-primary" : "btn btn-link")" @onclick="() => SelectTable(table)">@table</button></div>
         }
     </fieldset>
-    @if (_describing)
-    {
-        <p role="status">Loading table structure...</p>
-    }
+
     @if (_describedSchema is not null)
     {
         <h3>Table structure: @_describedSchema</h3>
@@ -89,30 +86,32 @@
             TopMenu.Clear();
         }
     }
-    private string? _selected, _message;
+    private string? _selected;
     private GXTableSchema? _describedSchema;
-    private bool _describing;
     private int _descriptionVersion;
     private void ClearDescription()
     {
         ++_descriptionVersion;
         _describedSchema = null;
-        _describing = false;
     }
     private DataVaultObjectType _type;
-    private bool _creating, _creatingMart, _busy;
+    private bool _creating, _creatingMart;
     protected override async Task OnInitializedAsync()
     {
+        NotificationService.RemoveByKey("Could not load data vault stage");
+
         try
         {
             _databases = await Api.GetDatabasesAsync("datavault", default);
             _database = _databases.FirstOrDefault();
             await LoadTablesAsync();
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not load data vault stage"); }
     }
     private async Task LoadTablesAsync()
     {
+        NotificationService.RemoveByKey("Could not load tables (data vault stage)");
+
         _creatingMart = false;
         _selected = null;
         ClearDescription();
@@ -120,11 +119,13 @@
         TopMenu.Clear();
         if (_database == null) return;
         try { _tables = await Api.GetTablesAsync(_database, default); }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not load tables (data vault stage)"); }
     }
     private async Task SelectTable(string table)
     {
         if (_creating || _creatingMart) return;
+        NotificationService.RemoveByKey("Could not select table (data vault stage)");
+
         _selected = table;
         TopMenu.Clear();
         TopMenu.EditContext = null;
@@ -135,8 +136,6 @@
         if (_database is null) return;
         var database = _database;
         int version = _descriptionVersion;
-        _describing = true;
-        _message = null;
         try
         {
             var schema = await Api.GetColumnsAsync(database, table, CancellationToken.None);
@@ -146,31 +145,27 @@
         }
         catch (Exception ex)
         {
-            if (version == _descriptionVersion) _message = $"Could not describe {table}: {ex.Message}";
-        }
-        finally
-        {
-            if (version == _descriptionVersion) _describing = false;
+            if (version == _descriptionVersion) NotificationService.ReportError(ex, "Could not select table (data vault stage)");
         }
     }
-    private void OpenMart() { if (!_busy && !_creating && _selected != null) _creatingMart = true; }
+    private void OpenMart() { if (!Progress.IsBusy && !_creating && _selected != null) _creatingMart = true; }
     private void CancelMart() => _creatingMart = false;
     private async Task MartCreatedAsync(GXCreateVaultTableResult result)
     {
         _creatingMart = false;
-        _message = result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.";
+        NotificationService.Add(new GXNotificationItem(result.MappingError is null ? NotificationLevel.Success : NotificationLevel.Error, "Data Vault Stage", result.MappingError ?? $"Created Mart {result.TableName} and saved its column mappings and refresh schedule.", Closable: true));
         await LoadTablesAsync();
     }
     private Task OpenAsync(DataVaultObjectType type)
     {
-        if (!_busy && !_creating && !_creatingMart) { _type = type; _creating = true; }
+        if (!Progress.IsBusy && !_creating && !_creatingMart) { _type = type; _creating = true; }
         return Task.CompletedTask;
     }
     private void CancelVault() => _creating = false;
     private async Task VaultCreatedAsync(GXCreateVaultTableResult result)
     {
         _creating = false;
-        _message = result.MappingError ?? $"Created table {result.TableName}.";
+        NotificationService.Add(new GXNotificationItem(result.MappingError is null ? NotificationLevel.Success : NotificationLevel.Error, "Data Vault Stage", result.MappingError ?? $"Created table {result.TableName}.", Closable: true));
         await LoadTablesAsync();
     }
 }

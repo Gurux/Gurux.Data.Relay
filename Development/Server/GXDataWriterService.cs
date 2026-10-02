@@ -1,3 +1,4 @@
+using E = System.Linq.Expressions.Expression;
 //
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -39,8 +40,6 @@ using Gurux.Data.Relay.Database;
 using Gurux.Data.Relay.Shared.Protocol;
 using Gurux.Service.Orm;
 using Gurux.Service.Orm.Model;
-using Gurux.Service.Orm.Settings;
-using System.Reflection;
 using Gurux.Service.Orm.Common.Enums;
 using Gurux.Data.Relay.Shared.Enums;
 using Gurux.Data.Relay.Shared.Server;
@@ -106,7 +105,6 @@ public sealed class GXDataWriterService : IDataWriterService
         if (!string.IsNullOrWhiteSpace(message.RecordSource) &&
             !tableSchema.Columns.Any(c => string.Equals(c.Name, GXRecordSource.ColumnName, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Destination table '{destinationTable}' needs a nullable RECORD_SOURCE string column (255 characters) to receive the configured record source.");
-        GXDBSettings settings = GetSettings(schemaManager);
         GXStageLoadDate.Apply(message, tableSchema, DateTimeOffset.Now);
 
         using IDbTransaction transaction = connection.BeginTransaction();
@@ -132,11 +130,11 @@ public sealed class GXDataWriterService : IDataWriterService
                         throw new InvalidOperationException("Update change must contain values.");
                     }
 
-                    await UpdateRowAsync(connection, transaction, settings, tableSchema, message.Keys, change, database.Type, cancellationToken);
+                    await UpdateRowAsync(connection, transaction, tableSchema, message.Keys, change, database.Type, cancellationToken);
                 }
                 else if (change.Operation == DataOperation.Delete)
                 {
-                    await DeleteRowAsync(connection, transaction, settings, tableSchema, message.Keys, change, database, cancellationToken);
+                    await DeleteRowAsync(connection, transaction, tableSchema, message.Keys, change, database, cancellationToken);
                 }
                 else
                 {
@@ -222,7 +220,6 @@ public sealed class GXDataWriterService : IDataWriterService
     private static async Task UpdateRowAsync(
         DbConnection connection,
         IDbTransaction transaction,
-        GXDBSettings settings,
         GXTableSchema tableSchema,
         List<string> messageKeys,
         GXDataChange change,
@@ -243,33 +240,9 @@ public sealed class GXDataWriterService : IDataWriterService
             throw new InvalidOperationException("Update change must include at least one non-key value.");
         }
 
-        string[] setClauses = setColumns
-            .Select((column, index) => $"{QuoteIdentifier(settings, column.Name, isTable: false)} = {GXSqlParameterHelper.GetPlaceholder(databaseType, $"set{index}")}")
-            .ToArray();
-        string[] whereClauses = keyColumns
-            .Select((column, index) => $"{QuoteIdentifier(settings, column.Name, isTable: false)} = {GXSqlParameterHelper.GetPlaceholder(databaseType, $"key{index}")}")
-            .ToArray();
-
-        string sql = $"UPDATE {QuoteIdentifier(settings, tableSchema.ToString(), isTable: true)} SET {string.Join(", ", setClauses)} WHERE {string.Join(" AND ", whereClauses)}";
-
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = (DbTransaction?)transaction;
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
-        for (int index = 0; index < setColumns.Count; ++index)
-        {
-            GXColumnSchema column = setColumns[index];
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, $"set{index}"), ConvertColumnValue(GetJsonValue(change.Values!, column.Name), column, tableSchema.Name, databaseType), databaseType);
-        }
-
-        for (int index = 0; index < keyColumns.Count; ++index)
-        {
-            GXColumnSchema column = keyColumns[index];
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, $"key{index}"), ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, databaseType), databaseType);
-        }
-
-        int affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        var predicate = GXSqlExpressions.And(keyColumns.Select(column => GXSqlExpressions.Equal(E.Constant(column),
+            GXSqlExpressions.Value(ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, databaseType)))).ToArray());
+        int affected = await new GXDbConnection(connection).UpdateAsync((DbTransaction?)transaction, GXUpdateArgs.Update(setColumns.Select(c => ConvertColumnValue(GetJsonValue(change.Values!, c.Name), c, tableSchema.Name, databaseType)).ToArray(), GXSchemaColumns.Columns(tableSchema, setColumns.Select(c => c.Name).ToArray())).Filter(predicate), cancellationToken);
         if (affected == 0)
         {
             throw new InvalidOperationException("Update change did not match any destination row.");
@@ -279,7 +252,6 @@ public sealed class GXDataWriterService : IDataWriterService
     private static async Task DeleteRowAsync(
         DbConnection connection,
         IDbTransaction transaction,
-        GXDBSettings settings,
         GXTableSchema tableSchema,
         List<string> messageKeys,
         GXDataChange change,
@@ -291,28 +263,13 @@ public sealed class GXDataWriterService : IDataWriterService
 
         if (database.DeleteMode == DeleteMode.SoftDelete)
         {
-            await SoftDeleteRowAsync(connection, transaction, settings, tableSchema, keyColumns, keyValues, database, cancellationToken);
+            await SoftDeleteRowAsync(connection, transaction, tableSchema, keyColumns, keyValues, database, cancellationToken);
             return;
         }
 
-        string[] whereClauses = keyColumns
-            .Select((column, index) => $"{QuoteIdentifier(settings, column.Name, isTable: false)} = {GXSqlParameterHelper.GetPlaceholder(database.Type, $"key{index}")}")
-            .ToArray();
-
-        string sql = $"DELETE FROM {QuoteIdentifier(settings, tableSchema.ToString(), isTable: true)} WHERE {string.Join(" AND ", whereClauses)}";
-
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = (DbTransaction?)transaction;
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
-        for (int index = 0; index < keyColumns.Count; ++index)
-        {
-            GXColumnSchema column = keyColumns[index];
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(database.Type, $"key{index}"), ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, database.Type), database.Type);
-        }
-
-        int affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        var predicate = GXSqlExpressions.And(keyColumns.Select(column => GXSqlExpressions.Equal(E.Constant(column),
+            GXSqlExpressions.Value(ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, database.Type)))).ToArray());
+        int affected = await new GXDbConnection(connection).DeleteAsync((DbTransaction?)transaction, GXDeleteArgs.Delete(tableSchema, predicate), cancellationToken);
         if (affected == 0)
         {
             throw new InvalidOperationException("Delete change did not match any destination row.");
@@ -322,7 +279,6 @@ public sealed class GXDataWriterService : IDataWriterService
     private static async Task SoftDeleteRowAsync(
         DbConnection connection,
         IDbTransaction transaction,
-        GXDBSettings settings,
         GXTableSchema tableSchema,
         List<GXColumnSchema> keyColumns,
         Dictionary<string, JsonElement> keyValues,
@@ -342,23 +298,9 @@ public sealed class GXDataWriterService : IDataWriterService
         }
 
         object markerValue = GXDeleteMarkerHelper.GetSoftDeleteMarkerValue(deletedColumn.Type);
-        string[] whereClauses = keyColumns
-            .Select((column, index) => $"{QuoteIdentifier(settings, column.Name, isTable: false)} = {GXSqlParameterHelper.GetPlaceholder(database.Type, $"key{index}")}")
-            .ToArray();
-        string sql = $"UPDATE {QuoteIdentifier(settings, tableSchema.ToString(), isTable: true)} SET {QuoteIdentifier(settings, deletedColumn.Name, isTable: false)} = {GXSqlParameterHelper.GetPlaceholder(database.Type, "deletedMarker")} WHERE {string.Join(" AND ", whereClauses)}";
-
-        await using DbCommand command = connection.CreateCommand();
-        command.Transaction = (DbTransaction?)transaction;
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-        AddParameter(command, GXSqlParameterHelper.GetPlaceholder(database.Type, "deletedMarker"), markerValue, database.Type);
-        for (int index = 0; index < keyColumns.Count; ++index)
-        {
-            GXColumnSchema column = keyColumns[index];
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(database.Type, $"key{index}"), ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, database.Type), database.Type);
-        }
-
-        int affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        var predicate = GXSqlExpressions.And(keyColumns.Select(column => GXSqlExpressions.Equal(E.Constant(column),
+            GXSqlExpressions.Value(ConvertColumnValue(GetJsonValue(keyValues, column.Name), column, tableSchema.Name, database.Type)))).ToArray());
+        int affected = await new GXDbConnection(connection).UpdateAsync((DbTransaction?)transaction, GXUpdateArgs.Update(new object?[] { markerValue }, GXSchemaColumns.Columns(tableSchema, [deletedColumn.Name])).Filter(predicate), cancellationToken);
         if (affected == 0)
         {
             throw new InvalidOperationException("Delete change did not match any destination row.");
@@ -460,28 +402,4 @@ public sealed class GXDataWriterService : IDataWriterService
         return false;
     }
 
-    private static void AddParameter(DbCommand command, string name, object? value, DatabaseType databaseType)
-    {
-        DbParameter parameter = command.CreateParameter();
-        parameter.ParameterName = GXSqlParameterHelper.GetParameterName(name);
-        parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(databaseType, value) ?? DBNull.Value;
-        command.Parameters.Add(parameter);
-    }
-
-    private static GXDBSettings GetSettings(GXSchemaManager schemaManager)
-    {
-        FieldInfo? builderField = typeof(GXSchemaManager).GetField("Builder", BindingFlags.Instance | BindingFlags.NonPublic);
-        object builder = builderField?.GetValue(schemaManager)
-            ?? throw new InvalidOperationException("Failed to access Gurux SQL builder.");
-        PropertyInfo? settingsProperty = builder.GetType().GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        return (GXDBSettings?)settingsProperty?.GetValue(builder)
-            ?? throw new InvalidOperationException("Failed to access Gurux database settings.");
-    }
-
-    private static string QuoteIdentifier(GXDBSettings settings, string identifier, bool isTable)
-    {
-        return GXSqlIdentifierHelper.QuoteIdentifier(settings, identifier, isTable);
-    }
 }
-
-

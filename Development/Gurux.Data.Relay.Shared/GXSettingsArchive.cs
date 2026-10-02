@@ -31,6 +31,7 @@
 //---------------------------------------------------------------------------
 
 using Gurux.Data.Relay.Shared.Enums;
+using Gurux.Service.Orm.Common.Model;
 using System.Text.Json.Serialization;
 
 namespace Gurux.Data.Relay.Shared;
@@ -44,4 +45,5 @@ public sealed class GXSettingsArchive
     [JsonRequired] public GXSettings Client { get; set; } = new() { Mode = ApplicationMode.Client };
     [JsonRequired] public GXSettings Server { get; set; } = new() { Mode = ApplicationMode.Server };
     [JsonRequired] public GXSettings DataVault { get; set; } = new() { Mode = ApplicationMode.DataVault };
+    public Dictionary<Guid, List<GXTableSchema>> Schemas { get; set; } = [];
 }

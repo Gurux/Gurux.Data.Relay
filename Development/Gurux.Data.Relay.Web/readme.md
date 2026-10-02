@@ -6,6 +6,28 @@ The Gurux Data Relay manages data transmission, reception, and Data Vault proces
 For more info check out [Gurux.Data.Relay](https://www.gurux.fi/Gurux.Data.Relay "Gurux.Data Relay").
 We are updating documentation on Gurux web page.
 
+Introduction
+===========================
+Gurux Data Relay transfers data from source databases to a receiving server over TCP or MQTT and can process it into a Data Vault warehouse. Use it to collect data from multiple sites or applications in one central database, integrate operational systems, or prepare data for reporting and analytics. The web interface lets you configure database connections, table mappings, transfer schedules, and Data Vault processing.
+
+Quick start
+=========================== 
+Configure the receiving Server first, then connect the Client and send the source database schema.
+
+1. Set the Server database.
+Open Server > Databases and add the destination database where received data will be stored. Set the database type and connection string, save the settings, and test the database connection.\
+2. Configure the receiving transport.
+Open Server > Transports and add a transport for incoming data. Select TCP or MQTT and configure the listening port or MQTT connection settings. Configure the table mappings to use the destination database and save the settings. Make sure the Server is running and ready to receive connections.\
+3. Select the Client database.
+Open Client > Databases and add the source database from which data will be read. Set the database type and connection string, save the settings, and test the database connection.
+4. Configure the Client transport.
+Open Client > Transports and add a transport that connects to the Server. Match the Server's transport settings, including the address, port, and any required authentication or MQTT topics. Select the source database and tables to transfer, then save the settings.
+5. Test the Server connection.
+In the Client transport's action menu, select Test server connection. Confirm that the connection succeeds before continuing.\
+6. Send the schema. Open the Client settings and select Send schema to send the Client database schema to the Server.\
+7. Or just use AI to do this [AI Agents and MCP](#ai-agents-and-mcp).
+
+
 Ideas and discussions
 =========================== 
 
@@ -40,7 +62,8 @@ The help icon opens the section for the active page or editor tab. The navigatio
 | Data Vault editors | [Add Stage](#add-stage), [Add Hub](#add-hub), [Add Link](#add-link), [Add Satellite](#add-satellite), [Add Reference](#add-reference), [Add Mart](#add-mart), [Schedules](#data-vault-schedules) |
 | Settings | [Configuration database](#configuration-database), [Import / Export](#import-and-export-all-settings), [Automatic column mappings](#settings--automatic-column-mappings) |
 | CORS settings | [Client](#client-cors), [Server](#server-cors), [Data Vault](#data-vault-cors) |
-| Update | [Configuration table updates](#update-configuration-tables) |
+| Update | [Software updates](#software-updates), [Configuration table updates](#update-configuration-tables) |
+| Agent | [AI Agents and MCP](#ai-agents-and-mcp) |
 
 Select **Client**, **Server**, or **Data Vault** from the navigation menu. The modes select databases by ID from one shared catalog. Tables, mappings, transports and runtime state remain mode-specific.
 
@@ -387,7 +410,7 @@ The minimum logging levels and REST, Swagger, and CORS settings work per mode in
 
 The application's shared **Settings** page separately defines the database type and connection string used to store configuration data. **Test** tests the connection and **Save** saves the setting.
 
-The **Update** page updates the configuration database table structures.
+The **Update** page checks for software releases and updates the configuration database table structures.
 
 These shared pages do not change the connection of an individual Client, Server, or Data Vault database.
 
@@ -421,7 +444,299 @@ Select **Server CORS** to configure browser access to the Server API. The contro
 
 Select **Data Vault CORS** to configure browser access to the Data Vault API. The controls work as described in [Client CORS](#client-cors), but save to Data Vault settings independently.
 
+## Software updates
+
+Open **Update** (`/update`) to view the installed software version, the latest release, and the last successful check. **Check for updates** starts a new check; **View release and downloads** opens the GitHub release page. A notification appears above the page content when a newer version is available. Updates are not installed automatically.
+
+The server uses the `Gurux.Updater.Net` NuGet package to check `Gurux/Gurux.Data.Relay` GitHub releases at startup and every six hours. Browsers refresh the shared result every minute. Failed checks show a warning on the Update page and retain the last successful result. The installed version comes from the web server assembly's informational version; release builds should set `Version` to match their release tag (for example, `dotnet publish -p:Version=1.2.3`).
+
+API: `GET /api/update/software` returns cached status; `POST /api/update/software/check` checks for a release. These endpoints do not download or install software.
+
 ## Update configuration tables
 
-Address: `/update`. The **Update** navigation item appears when configuration table changes are pending. Review the listed tables and changes, then select **Update tables**. The page reports the result and reloads the pending changes. Apply these updates before saving settings that require the newer configuration schema.
+Address: `/update`. The **Update** navigation item shows a warning badge when configuration table changes are pending. Review the listed tables and changes, then select **Update tables**. The page reports the result and reloads the pending changes. Apply these updates before saving settings that require the newer configuration schema.
 
+# AI Agents and MCP
+
+Gurux Data Relay can expose its functionality through the Model Context Protocol (MCP). An MCP-capable AI agent can discover the available Data Relay tools and use them without knowing the REST API endpoints, database-specific SQL, or the internal configuration format.
+
+Typical agent tasks include:
+
+- Listing configured databases.
+- Discovering tables and schemas.
+- Creating and updating transfers.
+- Running transfers and checking their status.
+- Inspecting Data Vault source schemas.
+- Proposing simple Data Vault models.
+- Validating Data Vault models before they are applied.
+
+The exact MCP transport depends on how Gurux Data Relay is deployed.
+
+For a server installation, configure the agent to connect to the Gurux Data Relay MCP endpoint, for example:
+
+```text
+https://localhost:5001/mcp
+```
+
+## Visual Studio Code
+
+Visual Studio Code can use MCP servers from Agent mode.
+
+For a workspace-specific local MCP server, create:
+
+```text
+.vscode/mcp.json
+```
+
+For a remote Gurux Data Relay MCP server:
+
+```json
+{
+  "servers": {
+    "gurux-data-relay": {
+      "type": "http",
+      "url": "http://localhost:5018/mcp"
+    }
+  }
+}
+```
+
+You can also add the server from the VS Code Command Palette:
+
+```text
+MCP: Add Server
+```
+
+After the MCP server is configured:
+
+1. Open the Chat view.
+2. Select Agent mode.
+3. Verify that the Gurux Data Relay MCP tools are available.
+4. Ask the agent to perform a Data Relay operation.
+
+Example prompts:
+
+```text
+Show all databases configured in Gurux Data Relay.
+```
+
+```text
+Show the tables in the ProductionMySQL database.
+```
+
+```text
+Create a transfer of the Customer table from ProductionMySQL to PostgreSQL
+and run it every 15 minutes.
+```
+
+```text
+Check the status of the last Customer transfer.
+```
+
+```text
+Add a Gurux Data Relay server TCP transport that listens on port 1000.\
+Use the existing Test database configuration and map the incoming source table Customer to the destination table STG_Customer.\
+Verify that the transport is configured correctly and ready to receive data.
+```
+
+```text
+Add a Gurux Data Relay client that reads the Customer table and sends its contents to the server at localhost:1000 over TCP once every minute.\
+Use the existing database configuration and verify that the client’s transfer interval is set to 60 seconds.
+```
+
+```text
+
+Build a Data Vault model from STG_Customer, then use that model to populate MART_Customer_DV.
+- Read Mart data through Hubs, Links, Satellites, and Reference tables.
+- Include only these output columns: CustomerId, CustomerNumber, CustomerName, Email, CompanyNumber, CompanyName, CountryCode, CountryName.
+- Use hash keys internally for joins. Exclude hash keys and technical metadata from the output.
+- Preserve original values without counts or other aggregations.
+- Produce one row per customer–company–country combination.
+- Add missing fields to both Data Vault mappings and physical tables before building the Mart.
+- Back up the existing Mart before changing its structure.
+- Populate the Mart and verify that its business columns, values, and row counts match the Stage. Verify that refreshing succeeds without creating duplicate rows.
+```
+
+
+VS Code may ask for confirmation before invoking MCP tools that modify configuration or data.
+
+## Claude Code
+
+Claude Code can connect directly to MCP servers.
+
+For a remote HTTP MCP server, configure the Gurux Data Relay MCP endpoint using the MCP options supported by your installed Claude Code version:
+
+```text
+http://localhost:5018/mcp
+```
+
+Use:
+
+```bash
+claude mcp list
+```
+
+to verify that the server is configured.
+
+After that, start Claude Code normally:
+
+```bash
+claude
+```
+
+Example prompts:
+
+```text
+Use Gurux Data Relay to list all configured databases.
+```
+
+```text
+Inspect the Customer table and show its primary key and columns.
+```
+
+```text
+Create a manual transfer from MySQL.Customer to PostgreSQL.Customer,
+but do not run it yet.
+```
+
+```text
+Analyze Customer, Company and Orders and propose a simple Data Vault model.
+Do not apply the model until I approve it.
+```
+
+For Data Vault design, the agent should inspect the schema and relationships first, propose Business Keys, Hubs, Links and Satellites, and validate the model before applying it.
+
+## Claude Desktop
+
+Claude Desktop can use local MCP servers configured in:
+
+Windows:
+
+```text
+%APPDATA%\Claude\claude_desktop_config.json
+```
+
+macOS:
+
+```text
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+Example configuration:
+
+```json
+{
+  "mcpServers": {
+    "gurux-data-relay": {
+      "command": "C:\\Program Files\\Gurux\\Gurux.Data.Relay.exe",
+      "args": [
+        "--mcp"
+      ]
+    }
+  }
+}
+```
+
+Use an absolute executable path.
+
+After changing the configuration file, completely exit Claude Desktop and start it again.
+
+When the Gurux Data Relay MCP server has been detected, its tools become available to Claude.
+
+Example prompts:
+
+```text
+What databases are configured in Gurux Data Relay?
+```
+
+```text
+Find the Customer table and describe its columns.
+```
+
+```text
+Create a transfer of Customer from MySQL to PostgreSQL every 15 minutes.
+```
+
+```text
+Analyze the Customer, Company and Orders tables and suggest a simple
+Data Vault 2.0 model. Show the proposal before creating anything.
+```
+
+## Recommended Agent Workflow
+
+For normal Data Relay configuration, an agent should typically work in this order:
+
+```text
+list_databases
+      |
+      v
+list_tables
+      |
+      v
+get_table_schema
+      |
+      v
+create_transfer
+      |
+      v
+run_transfer
+      |
+      v
+get_transfer_status
+```
+
+For Data Vault planning:
+
+```text
+list_databases
+      |
+      v
+list_tables
+      |
+      v
+get_table_schema
+      |
+      +--> get_table_relationships
+      |
+      +--> get_column_statistics
+      |
+      +--> get_sample_rows
+      |
+      v
+analyze_data_vault
+      |
+      v
+Agent proposes the model
+      |
+      v
+validate_data_vault_model
+      |
+      v
+User approval
+      |
+      v
+apply_data_vault_model
+```
+
+The agent should not automatically assume that a database primary key is the Data Vault Business Key. For example, an identity column such as `Customer.Id` can be a technical key while `Customer.CustomerNumber` is the actual Business Key.
+
+The agent should ask for confirmation when the Business Key or another important semantic decision is ambiguous.
+
+## Security
+
+Only connect trusted agents and MCP clients to Gurux Data Relay.
+
+MCP access can expose operations that read database metadata, modify Data Relay configuration, start transfers, or create Data Vault structures.
+
+The MCP interface should follow the same authorization rules as the other Gurux Data Relay interfaces.
+
+MCP tools must not expose:
+
+- Database passwords.
+- Connection-string passwords.
+- API keys.
+- Access tokens.
+- Private keys.
+- Other secret configuration values.
+
+Prefer read-only discovery and validation tools before tools that modify configuration or database structures.

@@ -36,6 +36,7 @@ using Gurux.Service.Orm.Common;
 using Gurux.Service.Orm.Common.Enums;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
+using System.Text.Json.Serialization;
 
 namespace Gurux.Data.Relay.Configuration;
 
@@ -82,8 +83,11 @@ public sealed class GXDataVaultTableMapping : IUnique<Guid>, IGXEntityMetadata
 
     public List<GXDataVaultColumnMapping> Columns { get; set; } = [];
 
-    [DataMember(Name = "ScheduleId")]
+    [IgnoreDataMember]
     public GXSchedule Schedule { get; set; } = new();
+
+    [JsonIgnore, DataMember]
+    public Guid ScheduleId { get; set; }
 
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 

@@ -11,3 +11,7 @@
 /Test
 Development/Gurux.Data.Relay.Web/Server/gurux.data.relay.settings.json
 Development/Gurux.Data.Relay.Web/Server/Gurux.Data.Relay.db
+/Development/Gurux.Data.Relay.DLMS
+/Development/Gurux.Data.Relay.Modbus
+/Development/Tests
+/.tmp

@@ -1,0 +1,62 @@
+@using Gurux.Data.Relay.Shared
+
+@if (SourceDatabases.Count > 0)
+{
+    <div class="mapping-grid">
+        <h3>Select target databases</h3>
+        <p>Each imported database must map to one distinct target database.</p>
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th scope="col">Imported database</th>
+                    <th scope="col">Target database</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (GXDatabase source in SourceDatabases)
+                {
+                    <tr>
+                        <td>@Describe(source)</td>
+                        <td>
+                            <InputSelect TValue="string" class="form-select form-select-sm" Value="@GetSelection(source.Id)" ValueChanged="@(value => SetSelection(source.Id, value))" ValueExpression="@(() => _valueProxy)">
+                                <option value="">Select target database...</option>
+                                @foreach (GXDatabase target in TargetDatabases)
+                                {
+                                    bool selectedByOther = IsSelectedByOther(source.Id, target.Id);
+                                    <option value="@target.Id.ToString()" disabled="@selectedByOther">@Describe(target)</option>
+                                }
+                            </InputSelect>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<GXDatabase> SourceDatabases { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<GXDatabase> TargetDatabases { get; set; } = [];
+    [Parameter, EditorRequired] public Dictionary<Guid, Guid> DatabaseMap { get; set; } = [];
+    [Parameter] public EventCallback<Dictionary<Guid, Guid>> DatabaseMapChanged { get; set; }
+
+    private string _valueProxy = string.Empty;
+
+    private string GetSelection(Guid sourceId)
+        => DatabaseMap.TryGetValue(sourceId, out Guid targetId) && targetId != Guid.Empty ? targetId.ToString() : string.Empty;
+
+    private bool IsSelectedByOther(Guid sourceId, Guid targetId)
+        => DatabaseMap.Any(item => item.Key != sourceId && item.Value == targetId);
+
+    private async Task SetSelection(Guid sourceId, string value)
+    {
+        if (Guid.TryParse(value, out Guid targetId)) DatabaseMap[sourceId] = targetId;
+        else DatabaseMap.Remove(sourceId);
+        await DatabaseMapChanged.InvokeAsync(DatabaseMap);
+    }
+
+    private static string Describe(GXDatabase database)
+        => string.IsNullOrWhiteSpace(database.Description)
+            ? database.Id.ToString()
+            : $"{database.Description} ({database.Id})";
+}

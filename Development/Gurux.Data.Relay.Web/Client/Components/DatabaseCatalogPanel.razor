@@ -1,3 +1,4 @@
+@inject IGXProgress Progress
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -37,8 +38,11 @@
 
 @inject GXAdminApiClient Api
 @inject NavigationManager Navigation
+@using Gurux.UI.Components.Enums
 
-<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _draft != null || _delete != null || _schemaDatabase != null || _busy || _describing || _describedSchema != null || _dataTableName != null)" OnChanged="LoadAsync">
+@inject IGXNotificationService NotificationService
+
+<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _draft != null || _delete != null || _schemaDatabase != null || Progress.IsBusy || _describing || _describedSchema != null || _dataTableName != null)" OnChanged="LoadAsync">
     @if (_dataTableName is not null)
     {
         <div class="table-structure-dialog">
@@ -55,61 +59,60 @@
             </GXValidationDialog>
         </div>
     }
-    @if (_draft is not null)
+    @if (_draft is not null && _editContext is not null)
     {
         <GXValidationDialog Model="@_draft" Title="@(_isNewDatabase ? "Add database" : "Edit database")" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
-            <EditForm Model="_draft" OnValidSubmit="SaveAsync" @key="_draft">
-                <DataAnnotationsValidator />
-                <ValidationSummary />
-                <label>Name</label><InputText class="form-control" @bind-Value="_draft.Description" />
-                <label>Database type</label>
-                <InputSelect class="form-select" @bind-Value="_draft.Type">
-                    @foreach (var type in Enum.GetValues<DatabaseType>())
-                    {
-                        <option value="@type">@type</option>
-                    }
-                </InputSelect>
-                <label>Connection string</label><InputTextArea class="form-control" @bind-Value="_draft.ConnectionString" />
-                <label>Record source (default)</label><InputText class="form-control" @bind-Value="_draft.RecordSource" />
-                <label>Delete mode</label>
-                <InputSelect class="form-select" @bind-Value="_draft.DeleteMode">
-                    @foreach (var mode in Enum.GetValues<DeleteMode>())
-                    {
-                        <option value="@mode">@mode</option>
-                    }
-                </InputSelect>
-                <label>Deleted column (for logical delete)</label><InputText class="form-control" @bind-Value="_draft.DeletedColumn" />
-                <div class="actions-row">
-                    <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="TestAsync">Test connection</button>
-                    <button type="submit" class="btn btn-primary" disabled="@_busy">Save</button>
-                    <button type="button" class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
-                </div>
-            </EditForm>
+            @if (_draft is not null && _editContext is not null)
+            {
+                <EditForm EditContext="@_editContext" OnValidSubmit="SaveAsync" @key="_draft">
+                    <DataAnnotationsValidator />
+                    <ValidationSummary />
+                    <label>Name</label><InputText class="form-control" @bind-Value="_draft.Description" />
+                    <label>Database type</label>
+                    <InputSelect class="form-select" @bind-Value="_draft.Type">
+                        @foreach (var type in Enum.GetValues<DatabaseType>())
+                        {
+                            <option value="@type">@type</option>
+                        }
+                    </InputSelect>
+                    <label>Connection string</label><InputTextArea class="form-control" @bind-Value="_draft.ConnectionString" />
+                    <label>Record source (default)</label><InputText class="form-control" @bind-Value="_draft.RecordSource" />
+                    <label>Delete mode</label>
+                    <InputSelect class="form-select" @bind-Value="_draft.DeleteMode">
+                        @foreach (var mode in Enum.GetValues<DeleteMode>())
+                        {
+                            <option value="@mode">@mode</option>
+                        }
+                    </InputSelect>
+                    <label>Deleted column (for logical delete)</label><InputText class="form-control" @bind-Value="_draft.DeletedColumn" />
+                    <div class="actions-row">
+                        <button type="button" class="btn btn-secondary" disabled="@Progress.IsBusy" @onclick="TestAsync">Test connection</button>
+                        <button type="submit" class="btn btn-primary" disabled="@Progress.IsBusy">Save</button>
+                        <button type="button" class="btn btn-secondary" disabled="@Progress.IsBusy" @onclick="Cancel">Cancel</button>
+                    </div>
+                </EditForm>
+            }
         </GXValidationDialog>
     }
     @if (_delete is not null)
     {
         <GXValidationDialog Model="@_delete" Title="Remove database" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
             <p>Delete database <strong>@Label(_delete)</strong> from the catalog?</p>
-            <button class="btn btn-danger" disabled="@_busy" @onclick="DeleteAsync">Delete</button>
-            <button class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
+            <button class="btn btn-danger" disabled="@Progress.IsBusy" @onclick="DeleteAsync">Delete</button>
+            <button class="btn btn-secondary" disabled="@Progress.IsBusy" @onclick="Cancel">Cancel</button>
         </GXValidationDialog>
     }
     <Panel Height="fill">
         <PanelItem Id="catalog-databases" Width="50%" Height="fill">
             <h2>Databases</h2>
             <p>Define databases here once, then select them in Client, Server and Data Vault.</p>
-            @if (_message != null)
-            {
-                <p role="status">@_message</p>
-            }
             @if (_schemaDatabase is not null)
             {
                 <h3>Import schema</h3>
                 <p>Database: <strong>@Label(_schemaDatabase)</strong></p>
                 <p>Select a JSON schema file containing one table or a list of tables. Existing tables will not be overwritten.</p>
-                <InputFile OnChange="ImportSchemaAsync" accept=".json,application/json" disabled="@_busy" />
-                <button class="btn btn-secondary" disabled="@_busy" @onclick="Cancel">Cancel</button>
+                <InputFile OnChange="ImportSchemaAsync" accept=".json,application/json" disabled="@Progress.IsBusy" />
+                <button class="btn btn-secondary" disabled="@Progress.IsBusy" @onclick="Cancel">Cancel</button>
             }
             else
             {
@@ -138,10 +141,7 @@
         </PanelItem>
         <PanelItem Id="catalog-source-tables" Height="fill">
             <h2>Source tables</h2>
-            @if (_describeError is not null)
-            {
-                <p class="text-danger" role="alert">@_describeError</p>
-            }
+
             @if (_selectedDatabase is null)
             {
                 <p>Select a database to view its source tables.</p>
@@ -152,12 +152,12 @@
                 <button class="btn btn-secondary" disabled="@_tablesLoading" @onclick="() => SelectDatabaseAsync(_selectedDatabase)">Refresh</button>
                 @if (_tablesLoading)
                 {
-                    <p role="status">Loading source tables...</p>
+                    
                 }
                 else if (_tablesError is not null)
                 {
 
-                    <p role="alert" class="text-danger">@_tablesError</p>
+                    
                 }
                 else if (_sourceTables.Count == 0)
                 {
@@ -184,6 +184,7 @@
 </GXLiveView>
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "databasecatalogpanel-" + Guid.NewGuid().ToString("N");
     [Inject] public IGXTopMenu? TopMenu { get; set; }
     protected override void OnAfterRender(bool firstRender)
@@ -224,10 +225,13 @@
     private async Task DescribeAsync(string name)
     {
         if (_describing || _selectedDatabase is null) return;
+        NotificationService.RemoveByKey("Could not describe (database catalog)");
+        NotificationService.RemoveByKey(_notificationKey + "_describeError");
+
         var database = _selectedDatabase;
         var request = _tablesRequest;
         _describing = true;
-        _describeError = null;
+        NotificationService.SetMessage(ref _describeError, null, _notificationKey + "_describeError", NotificationLevel.Error);
         _describedSchema = null;
         try
         {
@@ -238,7 +242,11 @@
         }
         catch (Exception ex)
         {
-            if (request == _tablesRequest) _describeError = $"Could not describe {name}: {ex.Message}";
+            NotificationService.ReportError(ex, "Could not describe (database catalog)");
+            if (request == _tablesRequest)
+            {
+                _describeError = $"Could not describe {name}: {ex.Message}";
+            }
         }
         finally { _describing = false; }
     }
@@ -250,20 +258,27 @@
     private int _tablesRequest;
     private async Task SelectDatabaseAsync(GXDatabase database)
     {
+        NotificationService.RemoveByKey("Could not select database (database catalog)");
+        NotificationService.RemoveByKey(_notificationKey + "_describeError");
+        NotificationService.RemoveByKey(_notificationKey + "_tablesError");
+
         var request = ++_tablesRequest;
         _activeSourceTable = null;
         _describedSchema = null;
-        _describeError = null;
+        NotificationService.SetMessage(ref _describeError, null, _notificationKey + "_describeError", NotificationLevel.Error);
         _selectedDatabase = database;
         _sourceTables = [];
-        _tablesError = null;
+        NotificationService.SetMessage(ref _tablesError, null, _notificationKey + "_tablesError", NotificationLevel.Error);
         _tablesLoading = true;
         try
         {
+            NotificationService.RemoveByKey("Could not select database (database catalog)");
             var tables = await Api.GetTablesAsync(database, default);
             if (request == _tablesRequest) _sourceTables = tables.OrderBy(name => name).ToArray();
         }
-        catch (Exception ex) { if (request == _tablesRequest) _tablesError = ex.Message; }
+        catch (Exception ex) { 
+            NotificationService.ReportError(ex, "Could not select database (database catalog)"); 
+            if (request == _tablesRequest) _tablesError = ex.Message; }
         finally { if (request == _tablesRequest) _tablesLoading = false; }
     }
     private ValueTask<ItemsProviderResult<GXDatabase>> GetDatabaseItems(GXItemsProviderRequest request)
@@ -271,25 +286,31 @@
     private List<GXDatabase> _databases = [];
     private bool _isNewDatabase;
     private GXDatabase? _draft, _delete, _schemaDatabase;
-    private string? _message;
-    private bool _busy;
+    private EditContext? _editContext;
     private static string Label(GXDatabase database) => string.IsNullOrWhiteSpace(database.Description) ? database.Id.ToString() : database.Description;
     protected override Task OnInitializedAsync() => LoadAsync();
     private async Task LoadAsync()
     {
+        NotificationService.RemoveByKey("Could not load database catalog");
+
         try
         {
+            NotificationService.RemoveByKey("Could not load database catalog");
             _databases = await Api.GetDatabaseCatalogAsync(default);
             var selected = _databases.FirstOrDefault(d => d.Id == _selectedDatabase?.Id) ?? _databases.FirstOrDefault();
             if (selected is not null) await SelectDatabaseAsync(selected);
             else { ++_tablesRequest; _selectedDatabase = null; _sourceTables = []; _tablesLoading = false; }
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex)
+        {
+            NotificationService.ReportError(ex, "Could not load database catalog");
+        }
     }
     private void AddDatabase()
     {
         _isNewDatabase = true;
         _draft = new GXDatabase();
+        _editContext = new EditContext(_draft);
     }
     private void Edit(GXDatabase database)
     {
@@ -305,55 +326,81 @@
             DeleteMode = database.DeleteMode,
             DeletedColumn = database.DeletedColumn
         };
+        _editContext = new EditContext(_draft);
     }
     private void Cancel()
     {
-        if (_busy) return;
+        if (Progress.IsBusy) return;
         _isNewDatabase = false;
         _draft = null;
+        _editContext = null;
         _delete = null;
         _schemaDatabase = null;
     }
     private async Task ImportSchemaAsync(InputFileChangeEventArgs args)
     {
-        if (_busy || _schemaDatabase is null) return;
+        if (Progress.IsBusy || _schemaDatabase is null) return;
         var database = _schemaDatabase;
-        _busy = true;
-        _message = "Importing schema...";
+        NotificationService.Add(new GXNotificationItem(NotificationLevel.Information, "Database catalog", "Importing schema...", Closable: true));
+        NotificationService.RemoveByKey("Could not import schema (database catalog)");
         try
         {
             await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
             await Api.ImportCatalogSchemaAsync(database.Id, stream, default);
             _schemaDatabase = null;
             await SelectDatabaseAsync(database);
-            _message = $"Schema imported into {Label(database)}. Configure the created tables in the required mode.";
+            NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Database catalog", $"Schema imported into {Label(database)}. Configure the created tables in the required mode.", Closable: true));
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex)
+        {
+            NotificationService.ReportError(ex, "Could not import schema (database catalog)");
+        }
     }
     private async Task SaveAsync()
     {
-        if (_busy || _draft is null) return;
-        _busy = true;
-        try { await Api.SaveCatalogDatabaseAsync(_draft, default); _isNewDatabase = false; _draft = null; _message = "Database saved."; await LoadAsync(); }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        if (Progress.IsBusy || _draft is null) return;
+        NotificationService.RemoveByKey("Could not save (database catalog)");
+        try
+        {
+            await Api.SaveCatalogDatabaseAsync(_draft, default);
+            _isNewDatabase = false;
+            _draft = null;
+            _editContext = null;
+            NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Database catalog", "Database saved.", Closable: true)); await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            NotificationService.ReportError(ex, "Could not save (database catalog)");
+        }
     }
     private async Task DeleteAsync()
     {
-        if (_busy || _delete is null) return;
-        _busy = true;
-        try { await Api.DeleteCatalogDatabaseAsync(_delete, default); _delete = null; _message = "Database deleted."; await LoadAsync(); }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        if (Progress.IsBusy || _delete is null) return;
+        NotificationService.RemoveByKey("Could not delete (database catalog)");
+        try
+        {
+            await Api.DeleteCatalogDatabaseAsync(_delete, default);
+            _delete = null;
+            NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Database catalog", "Database deleted.", Closable: true));
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            NotificationService.ReportError(ex, "Could not delete (database catalog)");
+        }
     }
     private async Task TestAsync()
     {
-        if (_busy || _draft is null) return;
-        _busy = true;
-        try { await Api.TestCatalogDatabaseAsync(_draft, default); _message = "Connection successful."; }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        if (Progress.IsBusy || _draft is null)
+        {
+            return;
+        }
+        NotificationService.RemoveByKey("Could not test (database catalog)");
+        try { await Api.TestCatalogDatabaseAsync(_draft, default); NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Database catalog", "Connection successful.", Closable: true)); }
+        catch (Exception ex)
+        {
+            NotificationService.ReportError(ex, "Could not test (database catalog)");
+        }
     }
 }
 

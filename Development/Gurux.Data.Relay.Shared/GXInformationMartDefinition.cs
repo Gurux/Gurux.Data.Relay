@@ -37,7 +37,27 @@ namespace Gurux.Data.Relay.Shared;
 public sealed class GXInformationMartDefinition
 {
     public Guid HubMappingId { get; set; }
+    public GXMartGrain Grain { get; set; } = GXMartGrain.Hub;
+    public string SourceReference { get; set; } = string.Empty;
+    public string SourceLink { get; set; } = string.Empty;
     public List<GXMartColumnSelection> Columns { get; set; } = [];
+    public List<GXMartReferenceJoin> ReferenceJoins { get; set; } = [];
+}
+
+public enum GXMartGrain
+{
+    Hub,
+    Link,
+    Reference,
+    Custom
+}
+
+public sealed class GXMartReferenceJoin
+{
+    public Guid FromMappingId { get; set; }
+    public string FromColumn { get; set; } = string.Empty;
+    public Guid ReferenceMappingId { get; set; }
+    public string ReferenceColumn { get; set; } = string.Empty;
 }
 
 public sealed class GXMartColumnSelection
@@ -46,6 +66,8 @@ public sealed class GXMartColumnSelection
     public string Column { get; set; } = string.Empty;
     public string TargetColumn { get; set; } = string.Empty;
     public Aggregation Aggregation { get; set; }
+    /// <summary>When false, a required hash key is used for grain/joining but omitted from Mart output.</summary>
+    public bool IncludeInOutput { get; set; }
 }
 
 public sealed class GXMartPreview

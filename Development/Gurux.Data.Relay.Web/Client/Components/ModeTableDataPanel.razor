@@ -34,6 +34,8 @@
 @using Gurux.Data.Relay.Configuration
 @using Gurux.Data.Relay.Shared
 @using System.Text.Json
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 
 @implements IDisposable
 @inject GXAdminApiClient Api
@@ -44,24 +46,21 @@
     <section class="panel">
         @if (_importFile != null)
         {
-            <button class="btn btn-secondary" disabled="@_loading" @onclick="() => _importFile = null">Cancel import</button>
+            <button class="btn btn-secondary" @onclick="() => _importFile = null">Cancel import</button>
         }
         <h2>Table Data</h2>
-        <MenuControl @key="(CanImport, IsJson, _loading, _importFile is null, string.IsNullOrEmpty(_selectedTable))" RightCorner="true">
+        <MenuControl @key="(CanImport, IsJson, _importFile is null, string.IsNullOrEmpty(_selectedTable))" RightCorner="true">
             <ChildContent>
                 <MenuItem Text="Export" Image="oi oi-data-transfer-upload" Id="export-data" OnClick="ExportAsync" />
                 @if (CanImport)
                 {
                     <MenuItem Text="@(IsJson ? "Import JSON" : "Import CSV")" Image="oi oi-data-transfer-download"
                               Id="import-data" OnClick="ImportFileAsync"
-                              ReadOnly="@(_loading || _importFile is null || string.IsNullOrEmpty(_selectedTable))" />
+                              ReadOnly="@(_importFile is null || string.IsNullOrEmpty(_selectedTable))" />
                 }
             </ChildContent>
         </MenuControl>
-        @if (_exporting)
-        {
-            <p role="status">Exporting table data…</p>
-        }
+
         @if (_exportUri is not null)
         {
             <a class="btn btn-outline-success" href="@_exportUri" download="@_exportFileName">Download JSON</a>
@@ -72,21 +71,21 @@
                 <DropdownSearch class="form-control"
                                 ShowItemsWhenEmpty="true"
                                 @bind-Value="_databaseId"
-                                Items="@(_databases.Select(database => database.Id).Prepend(Guid.Empty))" @bind-Value:after="LoadTablesAsync" Formatter="FormatDatabaseOption" disabled="@_loading"><Template Context="option">@(FormatDatabaseOption(option))</Template></DropdownSearch>
+                                Items="@(_databases.Select(database => database.Id).Prepend(Guid.Empty))" @bind-Value:after="LoadTablesAsync" Formatter="FormatDatabaseOption"><Template Context="option">@(FormatDatabaseOption(option))</Template></DropdownSearch>
             </label>
             <label>
                 Table
                 <DropdownSearch TValue="string" class="form-control"
                                 ShowItemsWhenEmpty="true" @bind-Value="_selectedTable"
-                                Items="@(_tables.Prepend(string.Empty))" @bind-Value:after="SelectTable" placeholder="Select table" disabled="@(_loading || _tables.Count == 0)"><Template Context="option">@(string.IsNullOrEmpty(option) ? "Select table" : option)</Template></DropdownSearch>
+                                Items="@(_tables.Prepend(string.Empty))" @bind-Value:after="SelectTable" placeholder="Select table" disabled="@(_tables.Count == 0)"><Template Context="option">@(string.IsNullOrEmpty(option) ? "Select table" : option)</Template></DropdownSearch>
             </label>
         </div>
         @if (CanImport)
         {
-            <fieldset disabled="@(_loading || string.IsNullOrEmpty(_selectedTable))" class="mt-3">
+            <fieldset disabled="@(string.IsNullOrEmpty(_selectedTable))" class="mt-3">
                 <legend>Import CSV / JSON</legend>
                 <div class="actions-row">
-                    <FileSelector TType="byte[]" OnLoaded="SelectImportFile" MaxFileSize="@(10 * 1024 * 1024)" Disabled="@_loading" Filter=".csv,.json,text/csv,application/json" />
+                    <FileSelector TType="byte[]" OnLoaded="SelectImportFile" MaxFileSize="@(10 * 1024 * 1024)" Filter=".csv,.json,text/csv,application/json" />
                     @if (!IsJson)
                     {
                         <label>
@@ -116,28 +115,19 @@
                 }
             </fieldset>
         }
-        @if (_importMessage is not null)
-        {
-            <p role="status">@_importMessage</p>
-        }
-        @if (_loading)
-        {
-            <p>Loading…</p>
-        }
-        @if (_error is not null)
-        {
-            <p class="notice" role="alert">@_error</p>
-        }
-        @if (!_loading && _databases.Count == 0)
+
+
+
+        @if (_databases.Count == 0)
         {
             <p>No databases configured.</p>
         }
-        else if (!_loading && _databaseId != Guid.Empty && _tables.Count == 0)
+        else if (_databaseId != Guid.Empty && _tables.Count == 0)
         {
 
             <p>No tables available.</p>
         }
-        @if (!_loading && !string.IsNullOrEmpty(_selectedTable))
+        @if (!string.IsNullOrEmpty(_selectedTable))
         {
             <div class="table-responsive">
                 <GXTable Id="@($"{_gxTableIdPrefix}-1")" TItem="GXTableDataRow" Context="row" @key="_version" @ref="_dataTable" @bind-PageSize="_pageSize"
@@ -176,6 +166,7 @@
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "modetabledatapanel-" + Guid.NewGuid().ToString("N");
     private string FormatDatabaseOption(Guid id)
     {
@@ -203,31 +194,30 @@
     }
     private Guid _databaseId;
     private string _selectedTable = string.Empty;
-    private string? _error;
     private string? _importMessage;
     private byte[]? _importFile;
     private string? _importFileName;
     private bool IsJson => string.Equals(Path.GetExtension(_importFileName), ".json", StringComparison.OrdinalIgnoreCase);
     private string _delimiter = ",";
     private bool _hasHeader = true;
-    private bool _loading, _empty;
+    private bool _empty;
     private bool _exporting;
     private string? _exportUri;
     private string? _exportFileName;
 
     private async Task ExportAsync()
     {
-        if (_loading || _exporting) return;
+        if (_exporting) return;
         if (_databaseId == Guid.Empty || string.IsNullOrEmpty(_selectedTable))
         {
-            _error = "Select a database and table first.";
+            NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, "Select a database and table first.", string.Empty, _notificationKey + "_error", Closable: true));
             return;
         }
         int version = _version;
         string tableName = _selectedTable;
         _exporting = true;
         _exportUri = null;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         try
         {
             string json = await Api.ExportTableDataAsync(Mode, _databaseId, tableName,
@@ -237,7 +227,7 @@
             _exportUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(json);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { if (version == _version) _error = $"Could not export data: {ex.Message}"; }
+        catch (Exception ex) { if (version == _version) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"Could not export data: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true)); } }
         finally { _exporting = false; }
     }
     private int _version;
@@ -256,12 +246,12 @@
     {
         _importFile = content;
         _importFileName = name;
-        _importMessage = null;
-        _error = null;
+        NotificationService.SetMessage(ref _importMessage, null, _notificationKey + "_importMessage", NotificationLevel.Information);
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         if (!IsJson && !string.Equals(Path.GetExtension(_importFileName), ".csv", StringComparison.OrdinalIgnoreCase))
         {
             _importFile = null;
-            _error = "Select a CSV or JSON file.";
+            NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, "Select a CSV or JSON file.", string.Empty, _notificationKey + "_error", Closable: true));
         }
         // FileSelector.OnLoaded is an Action, so Blazor does not rerender this parent automatically.
         StateHasChanged();
@@ -269,10 +259,9 @@
 
     private async Task ImportFileAsync()
     {
-        if (!CanImport || _importFile is null || _loading || string.IsNullOrEmpty(_selectedTable)) return;
-        _loading = true;
-        _error = null;
-        _importMessage = null;
+        if (!CanImport || _importFile is null || string.IsNullOrEmpty(_selectedTable)) return;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+        NotificationService.SetMessage(ref _importMessage, null, _notificationKey + "_importMessage", NotificationLevel.Information);
         ++_version;
         try
         {
@@ -281,17 +270,15 @@
                 ? await Api.ImportTableJsonAsync(_databaseId, _selectedTable, stream, _lifetime.Token, Mode)
                 : await Api.ImportTableCsvAsync(_databaseId, _selectedTable, stream, _delimiter, _hasHeader, _lifetime.Token, Mode);
             SelectTable();
-            _importFile = null; _importMessage = $"Imported {count} rows.";
+            _importFile = null; NotificationService.SetMessage(ref _importMessage, $"Imported {count} rows.", _notificationKey + "_importMessage", NotificationLevel.Success);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _loading = false; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
 
     private async Task RefreshAsync()
     {
-        _loading = true;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         try
         {
             _databases = Mode == "databases" ? await Api.GetDatabaseCatalogAsync(_lifetime.Token) : await Api.GetDatabasesAsync(Mode, _lifetime.Token);
@@ -302,14 +289,12 @@
             await LoadTablesAsync();
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _selectedTable = string.Empty; _error = ex.Message; }
-        finally { _loading = false; }
+        catch (Exception ex) { _selectedTable = string.Empty; NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
 
     private async Task LoadTablesAsync()
     {
-        _loading = true;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         string previous = _selectedTable;
         _selectedTable = string.Empty;
         _tables = [];
@@ -323,8 +308,7 @@
             SelectTable();
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _loading = false; }
+        catch (Exception ex) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); }
     }
 
     private void SelectTable()
@@ -334,15 +318,17 @@
         _dataTable = null;
         _importFile = null;
         _importFileName = null;
-        _importMessage = null;
+        NotificationService.SetMessage(ref _importMessage, null, _notificationKey + "_importMessage", NotificationLevel.Information);
         ++_version;
         _columns = [];
         _empty = false;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
     }
 
     private async ValueTask<ItemsProviderResult<GXTableDataRow>> ReadRowsAsync(GXItemsProviderRequest request)
     {
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         int version = _version;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, request.CancellationToken);
         try
@@ -360,7 +346,7 @@
         {
             if (version == _version)
             {
-                _error = ex.Message;
+                NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error");
                 _empty = false;
                 await InvokeAsync(StateHasChanged);
             }

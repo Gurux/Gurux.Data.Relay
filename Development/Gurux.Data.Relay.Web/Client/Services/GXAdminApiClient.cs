@@ -1,9 +1,42 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Data.Relay.Log;
 using Gurux.Service.Orm.Common.Model;
 using System.Diagnostics;
 using Gurux.Data.Relay.Shared;
 using Microsoft.Extensions.Logging;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Gurux.Data.Relay.Configuration;
 
@@ -11,8 +44,21 @@ namespace Gurux.Data.Relay.Web.Client.Services;
 
 public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 {
+    public async Task<GXSoftwareUpdateStatus> GetSoftwareUpdateStatusAsync(bool check, CancellationToken token)
+    {
+        using var progress = _progress?.ProgressStart("Get Software Update Status…");
+        using var response = check
+            ? await _httpClient.PostAsync("api/update/software/check", null, token)
+            : await _httpClient.GetAsync("api/update/software", token);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
+        return await response.Content.ReadFromJsonAsync<GXSoftwareUpdateStatus>(JsonOptions, token)
+            ?? throw new InvalidOperationException("Missing software update status.");
+    }
+
     public async Task<GXDataSourceRequest> CreateDataSourceAsync(GXDataSourceRequest source, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Create Data Source…");
         using var response = await _httpClient.PostAsJsonAsync("api/settings/data-sources", source, JsonOptions, token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
         return await response.Content.ReadFromJsonAsync<GXDataSourceRequest>(JsonOptions, token) ?? throw new InvalidOperationException("Missing data source.");
@@ -20,17 +66,20 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task SaveDataSourceAsync(GXDataSourceRequest source, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Save Data Source…");
         using var response = await _httpClient.PutAsJsonAsync($"api/settings/data-sources/{source.InstanceId}", source, JsonOptions, token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
     }
 
     public async Task DeleteDataSourceAsync(Guid id, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Delete Data Source…");
         using var response = await _httpClient.DeleteAsync($"api/settings/data-sources/{id}", token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
     }
     public async Task<GXDataSourceOverview> GetDataSourceOverviewAsync(CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Get Data Source Overview…");
         using var response = await _httpClient.GetAsync("api/settings/data-sources", token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
         return await response.Content.ReadFromJsonAsync<GXDataSourceOverview>(JsonOptions, token) ?? new GXDataSourceOverview();
@@ -38,6 +87,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<List<GXDatabase>> GetDatabaseCatalogAsync(CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Get Database Catalog…");
         using var response = await _httpClient.GetAsync("api/databases", token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
         return await response.Content.ReadFromJsonAsync<List<GXDatabase>>(JsonOptions, token) ?? [];
@@ -45,12 +95,14 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task TestCatalogDatabaseAsync(GXDatabase database, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Test Catalog Database…");
         using var response = await _httpClient.PostAsJsonAsync("api/databases/test", database, JsonOptions, token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
     }
 
     public async Task ImportCatalogSchemaAsync(Guid databaseId, Stream schema, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Import Catalog Schema…");
         using var content = new StreamContent(schema);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         using var response = await _httpClient.PostAsync($"api/databases/{databaseId}/schema", content, token);
@@ -59,6 +111,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task SaveCatalogDatabaseAsync(GXDatabase database, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Save Catalog Database…");
         using var response = await _httpClient.PutAsJsonAsync($"api/databases/{database.Id}", database, JsonOptions, token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
         var saved = await response.Content.ReadFromJsonAsync<GXDatabase>(JsonOptions, token)
@@ -68,13 +121,14 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task DeleteCatalogDatabaseAsync(GXDatabase database, CancellationToken token)
     {
+        using var progress = _progress?.ProgressStart("Delete Catalog Database…");
         using var response = await _httpClient.DeleteAsync($"api/databases/{database.Id}?concurrencyStamp={Uri.EscapeDataString(database.ConcurrencyStamp ?? "")}", token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, token));
     }
-    public async Task ImportAllSettingsAsync(string json, CancellationToken cancellationToken)
+    public async Task ImportAllSettingsAsync(GXSettingsImportRequest request, CancellationToken cancellationToken)
     {
-        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync("api/settings/archive/import", content, cancellationToken);
+        using var progress = _progress?.ProgressStart("Import All Settings…");
+        using var response = await _httpClient.PostAsJsonAsync("api/settings/archive/import", request, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
     }
@@ -82,6 +136,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
     public async Task<string> ExportTableDataAsync(string mode, Guid databaseId, string tableName,
         CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? filters = null)
     {
+        using var progress = _progress?.ProgressStart("Export Table Data…");
         using var output = new MemoryStream();
         using var writer = new Utf8JsonWriter(output, new JsonWriterOptions { Indented = true });
         writer.WriteStartArray();
@@ -117,6 +172,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<string> ExportTableSchemaAsync(Guid databaseId, string tableName, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Export Table Schema…");
         using var response = await _httpClient.GetAsync(
             $"api/databases/{databaseId}/schema?tableName={Uri.EscapeDataString(tableName)}", cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -126,6 +182,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task ImportTableSchemaAsync(Guid databaseId, Stream json, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Import Table Schema…");
         using var content = new StreamContent(json);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         using var response = await _httpClient.PostAsync($"api/database/client/{databaseId}/schema", content, cancellationToken);
@@ -135,16 +192,24 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     /// <summary>Returns configuration tables that need a schema update.</summary>
     public async Task<List<GXConfigurationTableChange>> GetConfigurationTableChangesAsync(CancellationToken cancellationToken)
-        => await _httpClient.GetFromJsonAsync<List<GXConfigurationTableChange>>("api/update", JsonOptions, cancellationToken) ?? [];
+    {
+        using var progress = _progress?.ProgressStart("Get Configuration Table Changes…");
+        using var response = await _httpClient.GetAsync("api/update", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
+        return await response.Content.ReadFromJsonAsync<List<GXConfigurationTableChange>>(JsonOptions, cancellationToken) ?? [];
+    }
 
     public async Task<int> StartDataVaultMappingAsync(Guid mappingId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Start Data Vault Mapping…");
         using var response = await _httpClient.PostAsync($"api/datavault/mappings/{mappingId}/start", null, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
         return await response.Content.ReadFromJsonAsync<int>(cancellationToken);
     }
     public async Task<int> RefreshMartAsync(Guid databaseId, Guid mappingId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Refresh Mart…");
         using var response = await _httpClient.PostAsync($"api/datavault/databases/{databaseId}/marts/{mappingId}/refresh", null, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -153,6 +218,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task UpdateConfigurationTableAsync(CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Update Configuration Table…");
         using var response = await _httpClient.PostAsync("api/update", null, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -160,6 +226,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task ResetClientTableCheckpointAsync(GXResetCheckpointRequest request, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Reset Client Table Checkpoint…");
         using var response = await _httpClient.PostAsJsonAsync("api/client/state/reset-checkpoint", request, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException(await ReadApiErrorAsync(response, cancellationToken), null, response.StatusCode);
@@ -167,6 +234,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task TestClientTransportConnectionAsync(Guid transportId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Test Client Transport Connection…");
         using var response = await _httpClient.PostAsync($"api/client/transports/{transportId}/test-connection", null, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -174,6 +242,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<string> GetDatabaseDiagramAsync(string? mode, Guid databaseId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Get Database Diagram…");
         using var response = await _httpClient.GetAsync(mode is null ? $"api/databases/{databaseId}/diagram" : $"api/database/{mode}/{databaseId}/diagram", cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -182,6 +251,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task RunClientTransportAsync(Guid transportId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Run Client Transport…");
         using var response = await _httpClient.PostAsync($"api/client/transports/{transportId}/run", null, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -192,6 +262,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
     public async Task<int> ImportTableJsonAsync(Guid databaseId, string tableName, Stream json,
         CancellationToken cancellationToken, string mode = "client")
     {
+        using var progress = _progress?.ProgressStart("Import Table Json…");
         using var content = new StreamContent(json);
         content.Headers.ContentType = new("application/json");
         using var response = await _httpClient.PostAsync(
@@ -204,6 +275,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
     public async Task<int> ImportTableCsvAsync(Guid databaseId, string tableName, Stream csv,
         string delimiter, bool hasHeader, CancellationToken cancellationToken, string mode = "client")
     {
+        using var progress = _progress?.ProgressStart("Import Table Csv…");
         using var content = new StreamContent(csv);
         content.Headers.ContentType = new("text/csv");
         using var response = await _httpClient.PostAsync(
@@ -216,6 +288,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
     public async Task<GXTableData> GetTableDataAsync(string mode, Guid databaseId, string tableName,
         int startIndex, int count, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? filters = null)
     {
+        using var progress = _progress?.ProgressStart("Get Table Data…");
         string filterQuery = filters == null ? "" : string.Concat(filters.Where(f => !string.IsNullOrWhiteSpace(f.Value))
             .Select(f => $"&{Uri.EscapeDataString($"filters[{f.Key}]")}={Uri.EscapeDataString(f.Value)}"));
         using var response = await _httpClient.GetAsync(
@@ -395,12 +468,12 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
         return await response.Content.ReadAsStringAsync(cancellationToken);
     }
 
-    public async Task ImportSettingsAsync(string mode, GXSettings settings, CancellationToken cancellationToken)
+    public async Task ImportSettingsAsync(string mode, GXSettingsImportRequest request, CancellationToken cancellationToken)
     {
         using var progress = _progress?.ProgressStart("Import Settings...");
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, progress?.CancellationToken ?? CancellationToken.None);
         cancellationToken = cancellation.Token;
-        using HttpResponseMessage response = await _httpClient.PostAsJsonAsync($"api/{mode}/settings/import", settings, JsonOptions, cancellationToken);
+        using HttpResponseMessage response = await _httpClient.PostAsJsonAsync($"api/{mode}/settings/import", request, JsonOptions, cancellationToken);
         response.EnsureSuccessStatusCode();
     }
 
@@ -501,6 +574,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<GXMartPreview> GetMartPreviewAsync(Guid databaseId, string sourceTable, Guid? hubMappingId, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Get Mart Preview…");
         string url = $"api/datavault/databases/{databaseId}/marts/preview?sourceTable={Uri.EscapeDataString(sourceTable)}";
         if (hubMappingId.HasValue) url += $"&hubMappingId={hubMappingId.Value}";
         using var response = await _httpClient.GetAsync(url, cancellationToken);
@@ -511,6 +585,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<GXEventPage<GXEventLog>> GetEventPageAsync(string mode, GXEventPageRequest request, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Get Event Page…");
         using var response = await _httpClient.PostAsJsonAsync($"api/{mode}/events/page", request, cancellationToken);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<GXEventPage<GXEventLog>>(TypedJsonOptions, cancellationToken) ?? new();
@@ -518,6 +593,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<GXCreateVaultTableResult> CreateMartAsync(Guid databaseId, GXCreateMartRequest request, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Create Mart…");
         using var response = await _httpClient.PostAsJsonAsync($"api/datavault/databases/{databaseId}/marts", request, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));
@@ -526,6 +602,7 @@ public sealed class GXAdminApiClient : IGXDataSourceAdminApi
 
     public async Task<GXCreateVaultTableResult> CreateVaultTableAsync(Guid databaseId, GXCreateVaultTableRequest request, CancellationToken cancellationToken)
     {
+        using var progress = _progress?.ProgressStart("Create Vault Table…");
         using var response = await _httpClient.PostAsJsonAsync($"api/datavault/databases/{databaseId}/tables", request, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(await ReadApiErrorAsync(response, cancellationToken));

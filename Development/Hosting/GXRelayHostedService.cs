@@ -1,3 +1,36 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using E = System.Linq.Expressions.Expression;
 using Gurux.Service.Orm.Common.Model;
 using System.Diagnostics;
 using Gurux.Data.Relay.Configuration;
@@ -1708,20 +1741,20 @@ public sealed class GXRelayHostedService : BackgroundService
         bool sawAnyRows = false;
 
         int shown = 0;
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = "SELECT Id, Timestamp, Source, Message, Data FROM GXEventLog ORDER BY Id DESC;";
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (shown < _commandLine.EventTop && await reader.ReadAsync(cancellationToken))
+        var query = EventLogQuery();
+        query.OrderBy.Add(GXSqlExpressions.Column("Id"), true);
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
+        foreach (var reader in selectedRows)
         {
-            long id = Convert.ToInt64(reader["Id"]);
+            if (shown >= _commandLine.EventTop) break;
+            long id = Convert.ToInt64(reader[0]);
             if (!sawAnyRows)
             {
                 lastSeenId = id;
                 sawAnyRows = true;
             }
 
-            string? source = Convert.ToString(reader["Source"]);
+            string? source = Convert.ToString(reader[2]);
             if (!MatchesLogLevel(source, _commandLine.EventMinimumLevel))
             {
                 continue;
@@ -1750,24 +1783,15 @@ public sealed class GXRelayHostedService : BackgroundService
 
             await using DbConnection connection = _connectionFactory.CreateConnection(configuration);
             await connection.OpenAsync(cancellationToken);
-            await using DbCommand command = connection.CreateCommand();
-            command.CommandType = CommandType.Text;
-            command.CommandText = """
-                SELECT Id, Timestamp, Source, Message, Data
-                FROM GXEventLog
-                WHERE Id > @lastSeenId
-                ORDER BY Id ASC;
-                """;
-            DbParameter lastSeenParameter = command.CreateParameter();
-            lastSeenParameter.ParameterName = "@lastSeenId";
-            lastSeenParameter.Value = lastSeenId;
-            command.Parameters.Add(lastSeenParameter);
+            var query = EventLogQuery();
+            query.Where.Set(GXSqlExpressions.Greater(GXSqlExpressions.Column("Id"), GXSqlExpressions.Value(lastSeenId)));
+            query.OrderBy.Add(GXSqlExpressions.Column("Id"));
 
-            await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
+            foreach (var reader in selectedRows)
             {
-                lastSeenId = Convert.ToInt64(reader["Id"]);
-                string? source = Convert.ToString(reader["Source"]);
+                lastSeenId = Convert.ToInt64(reader[0]);
+                string? source = Convert.ToString(reader[2]);
                 if (!MatchesLogLevel(source, _commandLine.EventMinimumLevel))
                 {
                     continue;
@@ -1776,6 +1800,13 @@ public sealed class GXRelayHostedService : BackgroundService
                 Console.WriteLine(FormatEventLogRow(reader));
             }
         }
+    }
+
+    private static GXSelectArgs EventLogQuery()
+    {
+        var table = new GXTableSchema { Name = "GXEventLog" };
+        return GXSelectArgs.Select(GXSchemaColumns.Columns(table,
+            new[] { "Id", "Timestamp", "Source", "Message", "Data" }));
     }
 
     private GXDatabaseConfiguration GetEventLogDatabaseConfiguration()
@@ -1810,13 +1841,13 @@ public sealed class GXRelayHostedService : BackgroundService
         return Enum.TryParse(levelText, true, out LogLevel level) && level >= minimumLevel.Value;
     }
 
-    private static string FormatEventLogRow(DbDataReader reader)
+    private static string FormatEventLogRow(object[] reader)
     {
-        string id = Convert.ToString(reader["Id"]) ?? string.Empty;
-        string timestamp = Convert.ToString(reader["Timestamp"]) ?? string.Empty;
-        string source = Convert.ToString(reader["Source"]) ?? string.Empty;
-        string message = Convert.ToString(reader["Message"]) ?? string.Empty;
-        string? data = reader["Data"] is DBNull ? null : Convert.ToString(reader["Data"]);
+        string id = Convert.ToString(reader[0]) ?? string.Empty;
+        string timestamp = Convert.ToString(reader[1]) ?? string.Empty;
+        string source = Convert.ToString(reader[2]) ?? string.Empty;
+        string message = Convert.ToString(reader[3]) ?? string.Empty;
+        string? data = reader[4] is DBNull ? null : Convert.ToString(reader[4]);
         string suffix = string.IsNullOrWhiteSpace(data) ? string.Empty : $" | {data}";
         return $"{id} | {timestamp} | {source} | {message}{suffix}";
     }

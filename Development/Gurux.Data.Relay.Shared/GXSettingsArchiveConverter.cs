@@ -50,7 +50,9 @@ public sealed class GXSettingsArchiveConverter : JsonConverter<GXSettingsArchive
             Databases = Get("databases").Deserialize<List<GXDatabase>>(options) ?? throw new JsonException("Database catalog is required."),
             Client = Get("client").Deserialize<GXSettings>(options) ?? throw new JsonException("Client settings are required."),
             Server = Get("server").Deserialize<GXSettings>(options) ?? throw new JsonException("Server settings are required."),
-            DataVault = Get("dataVault").Deserialize<GXSettings>(options) ?? throw new JsonException("Data Vault settings are required.")
+            DataVault = Get("dataVault").Deserialize<GXSettings>(options) ?? throw new JsonException("Data Vault settings are required."),
+            Schemas = Get("schemas").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null ? [] : GXModeSettingsSchemas.Read(root.GetRawText(), options)
+                .ToDictionary(item => item.Key, item => item.Value.ToList())
         };
     }
 
@@ -73,6 +75,11 @@ public sealed class GXSettingsArchiveConverter : JsonConverter<GXSettingsArchive
         Mode(nameof(value.Client), value.Client);
         Mode(nameof(value.Server), value.Server);
         Mode(nameof(value.DataVault), value.DataVault);
+        if (value.Schemas.Count != 0)
+        {
+            writer.WritePropertyName(Name(nameof(value.Schemas)));
+            JsonSerializer.Serialize(writer, value.Schemas, options);
+        }
         writer.WriteEndObject();
     }
 }

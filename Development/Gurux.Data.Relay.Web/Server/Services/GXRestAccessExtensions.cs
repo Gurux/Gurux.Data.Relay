@@ -1,5 +1,36 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
 using Gurux.Data.Relay.Configuration;
-using Gurux.Data.Relay.Enums;
 using Gurux.Data.Relay.Shared.Enums;
 using Microsoft.AspNetCore.Cors.Infrastructure;
 
@@ -29,9 +60,9 @@ public static class GXRestAccessExtensions
                 return;
             }
             var policies = context.RequestServices.GetRequiredService<GXWebApiPolicy>();
-            if (context.Request.Path.StartsWithSegments("/api"))
+            if (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/mcp"))
             {
-                var settings = await policies.GetAsync(GXWebApiPolicy.ModeFromPath(context.Request.Path) ?? ApplicationMode.Server, context.RequestAborted);
+                var settings = await policies.GetAsync(context.Request.Path.StartsWithSegments("/mcp") ? ApplicationMode.DataVault : GXWebApiPolicy.ModeFromPath(context.Request.Path) ?? ApplicationMode.Server, context.RequestAborted);
                 if (!settings.RestEnabled)
                 {
                     context.Response.StatusCode = StatusCodes.Status404NotFound;

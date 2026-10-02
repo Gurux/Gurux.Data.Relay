@@ -1,3 +1,5 @@
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -53,7 +55,7 @@
 @if (_draft is not null)
 {
     <GXValidationDialog Model="@_draft" Title="@(_original is null ? "Add table mapping" : "Edit table mapping")" OkButtonTitle="" CancelButtonTitle="" OnCancel="Cancel">
-        @if (_error is not null) { <p class="alert alert-danger" role="alert">@_error</p> }
+
         <div class="mb-3">
             <label>Source table name</label>
             <InputText class="form-control" @bind-Value="_draft.Source" />
@@ -76,13 +78,14 @@
             </DropdownSearch>
             <ValidationMessage For="@(() => _draft.Table)" />
         </div>
-        <button type="button" class="btn btn-success" disabled="@_loading" @onclick="ConfirmAsync">Apply mapping</button>
+        <button type="button" class="btn btn-success" @onclick="ConfirmAsync">Apply mapping</button>
         <button type="button" class="btn btn-secondary ms-2" @onclick="Cancel">Cancel</button>
         <p class="form-text">Save the transport to persist these changes.</p>
     </GXValidationDialog>
 }
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "servertablemappings-" + Guid.NewGuid().ToString("N");
     [Parameter, EditorRequired] public GXSettings Settings { get; set; } = default!;
     [Parameter, EditorRequired] public List<GXTransportTable> Routes { get; set; } = [];
@@ -90,8 +93,6 @@
     private GXTable<GXTransportTable>? _grid;
     private GXTransportTable? _active, _original, _draft;
     private IReadOnlyList<string> _tables = [];
-    private string? _error;
-    private bool _loading;
     private int _loadVersion;
 
     private ValueTask<ItemsProviderResult<GXTransportTable>> GetItems(GXItemsProviderRequest request)
@@ -104,7 +105,7 @@
     {
         _original = route;
         _draft = route is null ? new() : System.Text.Json.JsonSerializer.Deserialize<GXTransportTable>(System.Text.Json.JsonSerializer.Serialize(route))!;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         await LoadTablesAsync();
     }
 
@@ -119,34 +120,31 @@
     {
         int version = ++_loadVersion;
         _tables = [];
-        _error = null;
-        _loading = false;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         var database = Settings.Databases.FirstOrDefault(d => d.Id == _draft?.DatabaseId);
         if (database is null) return;
-        _loading = true;
         try
         {
             var tables = await Api.GetTablesAsync(database, CancellationToken.None);
             if (version == _loadVersion) _tables = tables;
         }
-        catch (Exception ex) { if (version == _loadVersion) _error = ex.Message; }
-        finally { if (version == _loadVersion) _loading = false; }
+        catch (Exception ex) { if (version == _loadVersion) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.ReportError(ex, _notificationKey + "_error"); } }
     }
 
     private async Task ConfirmAsync()
     {
-        if (_draft is null || _loading) return;
+        if (_draft is null) return;
         _draft.Source = _draft.Source?.Trim();
         _draft.Table = _draft.Table.Trim();
         if (string.IsNullOrWhiteSpace(_draft.Source) || string.IsNullOrWhiteSpace(_draft.Table) || !Settings.Databases.Any(d => d.Id == _draft.DatabaseId))
-        { _error = "Select a source name, destination database and destination table."; return; }
+        { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, "Select a source name, destination database and destination table.", string.Empty, _notificationKey + "_error", Closable: true)); return; }
         if (Routes.Any(r => r != _original && string.Equals(r.Source, _draft.Source, StringComparison.OrdinalIgnoreCase)))
-        { _error = "Each incoming table name can have only one destination per transport."; return; }
+        { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, "Each incoming table name can have only one destination per transport.", string.Empty, _notificationKey + "_error", Closable: true)); return; }
         if (_original is null) Routes.Add(_draft);
         else
         {
             int index = Routes.IndexOf(_original);
-            if (index < 0) { _error = "The selected mapping no longer exists."; return; }
+            if (index < 0) { NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, "The selected mapping no longer exists.", string.Empty, _notificationKey + "_error", Closable: true)); return; }
             if (_original.Table != _draft.Table || _original.DatabaseId != _draft.DatabaseId) _draft.TableId = null;
             Routes[index] = _draft;
         }
@@ -154,7 +152,7 @@
         await ChangedAsync();
     }
 
-    private void Cancel() { ++_loadVersion; _draft = null; _original = null; _error = null; _loading = false; }
+    private void Cancel() { ++_loadVersion; _draft = null; _original = null; NotificationService.RemoveByKey(_notificationKey + "_error"); }
     private Task EditSelectedAsync() => _active is null ? Task.CompletedTask : OpenAsync(_active);
     private Task RemoveSelectedAsync() => _active is null ? Task.CompletedTask : RemoveAsync(_active);
     private async Task RemoveAsync(GXTransportTable route)

@@ -37,6 +37,8 @@
 @using Gurux.Data.Relay.Shared
 @using Microsoft.AspNetCore.Components.Web.Virtualization
 @using Gurux.Data.Relay.Shared.Enums
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 
 @if (_action != CrudAction.None && _session != null)
 {
@@ -47,10 +49,7 @@ else
 {
     <section class="panel">
         <p>Transport changes are saved with Save table.</p>
-        @if (!string.IsNullOrWhiteSpace(_message))
-        {
-            <p class="notice">@_message</p>
-        }
+
 
         <MenuControl RightCorner="true">
             <ChildContent>
@@ -96,6 +95,7 @@ else
 }
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private readonly string _gxTableIdPrefix = "clienttransportspanel-" + Guid.NewGuid().ToString("N");
     [Parameter, EditorRequired] public GXTable Table { get; set; } = default!;
     private GXTable? _previousTable;
@@ -153,7 +153,7 @@ else
         Table.Transports = table.Transports;
         _activeTransport = null;
         OnTransportCancelled();
-        _message = "Transport changes applied. Save table to persist them.";
+        NotificationService.SetMessage(ref _message, "Transport changes applied. Save table to persist them.", _notificationKey + "_message", NotificationLevel.Information);
         return Task.CompletedTask;
     }
     private void OnTransportCancelled()

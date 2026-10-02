@@ -1,4 +1,7 @@
-﻿@*
+@implements IDisposable
+@inject NavigationManager Navigation
+@inject IGXNotificationService NotificationService
+@*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
 //
@@ -42,6 +45,8 @@
         <Help />
         <TopMenu>
             <article class="content px-4">
+                <SoftwareUpdateNotification />
+                <NotificationsTile />
                 @Body
             </article>
         </TopMenu>
@@ -49,6 +54,16 @@
 </div>
 
 @code {
+    protected override void OnInitialized() => Navigation.LocationChanged += LocationChanged;
+
+    private void LocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args)
+    {
+        foreach (var notification in NotificationService.Notifications
+            .Where(item => item.Scope == Gurux.UI.Components.Enums.NotificationScope.Page).ToArray())
+            NotificationService.Remove(notification.Id);
+    }
+
+    public void Dispose() => Navigation.LocationChanged -= LocationChanged;
 }
 
 

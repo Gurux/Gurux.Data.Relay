@@ -34,44 +34,56 @@
 @using Gurux.Data.Relay.Shared
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Forms
+@using Gurux.UI.Components.Enums
 @inject GXAdminApiClient Api
+@inject IGXNotificationService NotificationService
 
 <GXLiveView Mode="@Mode" Busy="@_saving" IsEditing="@(() => _saving || _jsonText != _loadedJson)" OnChanged="LoadAsync">
 
-<section class="panel">
-    <h2>@Title</h2>
+    <section class="panel">
+        <h2>@Title</h2>
 
-    @if (!string.IsNullOrWhiteSpace(_message))
-    {
-        <p class="notice">@_message</p>
-    }
 
-    <div class="actions-row">
-        @if (_jsonText != _loadedJson) { <button class="btn btn-secondary" @onclick="LoadAsync">Discard changes</button> }
-        <button class="btn btn-success" @onclick="SaveAsync">Save</button>
-        <button class="btn btn-secondary" @onclick="ExportAsync">Export settings</button>
-        @if (!string.IsNullOrWhiteSpace(_exportDataUri))
+
+        <div class="actions-row">
+            @if (_jsonText != _loadedJson)
+            {
+                <button class="btn btn-secondary" @onclick="LoadAsync">Discard changes</button>
+            }
+            <button class="btn btn-success" @onclick="SaveAsync">Save</button>
+            <a class="btn btn-secondary" href="@($"api/{Mode}/settings/export")" download>Export settings</a>
+            <label class="btn btn-outline-secondary mb-0">
+                Import settings
+                <InputFile OnChange="SelectImportFileAsync" style="display:none" />
+            </label>
+            @if (ShowClientActions)
+            {
+                <button class="btn btn-info" @onclick="SendSchemaAsync">Send schema</button>
+            }
+        </div>
+
+        @if (_importedSettings is not null)
         {
-            <a class="btn btn-outline-success" href="@_exportDataUri" download="@_exportFileName">Download export</a>
+            <div class="notice mt-2">
+                <p><strong>Import file:</strong> @_importFileName</p>
+                <p><strong>Imported databases:</strong> @_importedSettings.Databases.Count</p>
+                <DatabaseImportMappingSelector SourceDatabases="_importedSettings.Databases" TargetDatabases="ImportTargets" DatabaseMap="_databaseMap" DatabaseMapChanged="OnDatabaseMapChanged" />
+                <div class="actions-row">
+                    <button class="btn btn-primary" @onclick="ImportAsync" disabled="@(!CanImportMapped)">Import selected settings</button>
+                    <button class="btn btn-secondary" @onclick="ClearImportDraft">Cancel import</button>
+                </div>
+            </div>
         }
-        <label class="btn btn-outline-secondary mb-0">
-            Import settings
-            <InputFile OnChange="ImportAsync" style="display:none" />
-        </label>
-        @if (ShowClientActions)
-        {
-            <button class="btn btn-info" @onclick="SendSchemaAsync">Send schema</button>
-        }
-    </div>
 
-    <p class="summary">@_summary</p>
+        <p class="summary">@_summary</p>
 
-    <InputTextArea class="json-editor" @bind-Value="_jsonText" @oninput="@(e => { _jsonText = e.Value?.ToString() ?? string.Empty; })"></InputTextArea>
-</section>
+        <InputTextArea class="json-editor" @bind-Value="_jsonText" @oninput="@(e => { _jsonText = e.Value?.ToString() ?? string.Empty; })"></InputTextArea>
+    </section>
 
 
 </GXLiveView>
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     [Parameter, EditorRequired]
     public string Mode { get; set; } = string.Empty;
 
@@ -82,13 +94,31 @@
     public bool ShowClientActions { get; set; }
 
     private GXSettings _settings = new();
+    private readonly List<GXDatabase> _catalogDatabases = [];
     private bool _saving;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private string _jsonText = "{}"; private string _loadedJson = "{}";
     private string _summary = string.Empty;
     private string? _message;
-    private string? _exportDataUri;
-    private string _exportFileName = "settings.json";
+    private GXSettings? _importedSettings;
+    private string? _importJson;
+    private string? _importFileName;
+    private readonly Dictionary<Guid, Guid> _databaseMap = [];
+
+    private IReadOnlyList<GXDatabase> ImportTargets => _settings.Databases.Count > 0 ? _settings.Databases : _catalogDatabases;
+
+    private bool CanImportMapped
+    {
+        get
+        {
+            if (_importedSettings is null || _importJson is null) return false;
+            if (_importedSettings.Databases.Count == 0) return true;
+            if (_databaseMap.Count != _importedSettings.Databases.Select(database => database.Id).Distinct().Count()) return false;
+            var targetIds = _databaseMap.Values.ToArray();
+            return targetIds.Length == targetIds.Distinct().Count() &&
+                targetIds.All(targetId => ImportTargets.Any(database => database.Id == targetId));
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -98,64 +128,105 @@
     private async Task LoadAsync()
     {
         _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+        _catalogDatabases.Clear();
+        _catalogDatabases.AddRange(await Api.GetDatabaseCatalogAsync(CancellationToken.None));
         _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
         _summary = BuildSummary(_settings);
-        _message = "Settings loaded.";
+        NotificationService.SetMessage(ref _message, "Settings loaded.", _notificationKey + "_message", NotificationLevel.Information);
+        ClearImportDraft();
     }
 
     private async Task SaveAsync()
     {
         if (_saving) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _saving = true;
         try
         {
-        _settings = JsonSerializer.Deserialize<GXSettings>(_jsonText, JsonOptions) ?? throw new JsonException("Settings must be a JSON object.");
-        await Api.SaveSettingsAsync(Mode, _settings, CancellationToken.None);
-        _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
-        _summary = BuildSummary(_settings);
-        _message = "Settings saved.";
+            _settings = JsonSerializer.Deserialize<GXSettings>(_jsonText, JsonOptions) ?? throw new JsonException("Settings must be a JSON object.");
+            await Api.SaveSettingsAsync(Mode, _settings, CancellationToken.None);
+            _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
+            _summary = BuildSummary(_settings);
+            NotificationService.SetMessage(ref _message, "Settings saved.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
         finally { _saving = false; }
     }
 
-    private async Task ExportAsync()
-    {
-        string json = await Api.ExportSettingsAsync(Mode, CancellationToken.None);
-        _exportDataUri = "data:application/json;charset=utf-8," + Uri.EscapeDataString(json);
-        _exportFileName = $"Gurux.Data.Relay.{Mode}.settings.json";
-        _message = $"Export ready ({json.Length} characters). Use Download export.";
-    }
-
-    private async Task ImportAsync(InputFileChangeEventArgs args)
+    private async Task SelectImportFileAsync(InputFileChangeEventArgs args)
     {
         if (_saving) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
+        ClearImportDraft();
+        try
+        {
+            IBrowserFile file = args.File;
+            await using Stream stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using StreamReader reader = new(stream);
+            string json = await reader.ReadToEndAsync();
+
+            var importOptions = new JsonSerializerOptions(JsonOptions);
+            importOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, importOptions)
+                ?? throw new JsonException("Settings must be a JSON object.");
+            if (!string.Equals(imported.Mode.ToString(), Mode, StringComparison.OrdinalIgnoreCase))
+                throw new JsonException($"This file contains {imported.Mode} settings, not {Mode} settings.");
+
+            _importedSettings = imported;
+            _importJson = json;
+            _importFileName = file.Name;
+            InitializeDatabaseMap(imported.Databases, ImportTargets);
+            NotificationService.SetMessage(ref _message, "Select target databases and import.", _notificationKey + "_message", NotificationLevel.Information);
+        }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
+    }
+
+    private async Task ImportAsync()
+    {
+        if (_saving || !CanImportMapped || _importJson is null || _importedSettings is null) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         _saving = true;
         try
         {
-        IBrowserFile file = args.File;
-        await using Stream stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
-        using StreamReader reader = new(stream);
-        string json = await reader.ReadToEndAsync();
-
-        var importOptions = new JsonSerializerOptions(JsonOptions);
-        importOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
-        GXSettings imported = JsonSerializer.Deserialize<GXSettings>(json, importOptions)
-            ?? throw new JsonException("Settings must be a JSON object.");
-        await Api.ImportSettingsAsync(Mode, imported, CancellationToken.None);
-        _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
-        _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
-        _summary = BuildSummary(_settings);
-        _message = "Imported settings saved.";
+            await Api.ImportSettingsAsync(Mode, new GXSettingsImportRequest { Json = _importJson, DatabaseMap = new Dictionary<Guid, Guid>(_databaseMap) }, CancellationToken.None);
+            _settings = await Api.GetSettingsAsync(Mode, CancellationToken.None);
+            _jsonText = GXDatabaseSelectionsJson.WithoutCatalogFields(JsonSerializer.Serialize(_settings, JsonOptions), JsonOptions); _loadedJson = _jsonText;
+            _summary = BuildSummary(_settings);
+            ClearImportDraft();
+            NotificationService.SetMessage(ref _message, "Imported settings saved.", _notificationKey + "_message", NotificationLevel.Success);
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
         finally { _saving = false; }
+    }
+
+    private void InitializeDatabaseMap(IReadOnlyList<GXDatabase> imported, IReadOnlyList<GXDatabase> targets)
+    {
+        _databaseMap.Clear();
+        HashSet<Guid> used = [];
+        foreach (GXDatabase database in imported)
+        {
+            if (targets.Any(target => target.Id == database.Id) && used.Add(database.Id))
+                _databaseMap[database.Id] = database.Id;
+        }
+    }
+
+    private Task OnDatabaseMapChanged(Dictionary<Guid, Guid> _) => Task.CompletedTask;
+
+    private void ClearImportDraft()
+    {
+        _importedSettings = null;
+        _importJson = null;
+        _importFileName = null;
+        _databaseMap.Clear();
     }
 
     private async Task SendSchemaAsync()
     {
         int sentSchemas = await Api.SendClientSchemaAsync(CancellationToken.None);
-        _message = $"Schema send completed. Sent {sentSchemas} schema messages.";
+        NotificationService.SetMessage(ref _message, $"Schema send completed. Sent {sentSchemas} schema messages.", _notificationKey + "_message", NotificationLevel.Success);
     }
 
     private static string BuildSummary(GXSettings settings)

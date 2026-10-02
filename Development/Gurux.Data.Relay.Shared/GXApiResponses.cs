@@ -34,7 +34,9 @@ using Gurux.Data.Relay.Configuration;
 
 namespace Gurux.Data.Relay.Shared;
 
-/// <summary>Data Vault mapping details and its owning database.</summary>
+/// <summary>
+/// Data Vault mapping details and its owning database.
+/// </summary>
 public sealed class GXDataVaultMappingDetails
 {
     /// <summary>Owning database identifier.</summary>

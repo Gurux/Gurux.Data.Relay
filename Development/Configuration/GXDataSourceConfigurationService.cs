@@ -100,7 +100,7 @@ public sealed class GXDataSourceConfigurationService(GXConfigurationStoreSetting
                 DeliveryAttempts = source.DeliveryAttempts,
                 RetryDelaySeconds = source.RetryDelaySeconds
             };
-            GXDataSource? existing = await connection.SingleOrDefaultAsync<GXDataSource>(transaction, GXSelectArgs.SelectById<GXDataSource>(entity.Id), cancellationToken);
+            GXDataSource? existing = await connection.SingleOrDefaultAsync<GXDataSource>(transaction, Gurux.Data.Relay.Database.GXMetadataQueries.Select<GXDataSource>(connection, ("Id", entity.Id)), cancellationToken);
             await GXEntityPersistence.SaveAsync(connection, transaction, entity, existing, cancellationToken);
             await connection.DeleteAsync(transaction, GXDeleteArgs.Delete<GXDataSourceRoute>(route => route.DataSource == entity.Id), cancellationToken);
             for (int index = 0; index < source.RouteIds.Count; ++index)

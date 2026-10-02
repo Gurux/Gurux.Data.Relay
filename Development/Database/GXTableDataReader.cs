@@ -1,9 +1,41 @@
-using System.Globalization;
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using E = System.Linq.Expressions.Expression;
+using Gurux.Service.Orm;
+using Gurux.Service.Orm.Common.Model;
 using System.Text.Json;
 using Gurux.Data.Relay.Configuration;
 using Gurux.Data.Relay.Shared;
-using Gurux.Service.Orm.Common.Enums;
-using Gurux.Service.Orm.Enums;
 
 namespace Gurux.Data.Relay.Database;
 
@@ -12,73 +44,47 @@ public sealed class GXTableDataReader(IGXDatabaseConnectionFactory connections, 
 {
     public async Task<GXTableData> ReadAsync(GXDatabaseConfiguration database, string tableName,
         int startIndex, int count, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? filters = null)
-    {
+    {       
         if (startIndex < 0 || count < 1 || count > 1000)
             throw new ArgumentOutOfRangeException(nameof(count), "Use a nonnegative offset and 1–1000 rows per page.");
         var tables = await metadata.GetTableNamesAsync(database, cancellationToken);
         if (!tables.Contains(tableName, StringComparer.Ordinal))
             throw new ArgumentException("The selected table does not exist.", nameof(tableName));
         var schema = await metadata.DescribeTableAsync(database, tableName, cancellationToken);
-        string Quote(string name) => database.Type switch
-        {
-            DatabaseType.MSSQL => "[" + name.Replace("]", "]]") + "]",
-            DatabaseType.MySQL or DatabaseType.MariaDB => "`" + name.Replace("`", "``") + "`",
-            _ => "\"" + name.Replace("\"", "\"\"") + "\""
-        };
-        string table = string.Join(".", tableName.Split('.').Select(Quote));
-        var keys = schema.Columns.Where(c => c.IsPrimaryKey).Select(c => Quote(c.Name)).ToArray();
-        string order = keys.Length == 0 ? "1" : string.Join(", ", keys);
-        string offset = startIndex.ToString(CultureInfo.InvariantCulture);
-        string limit = count.ToString(CultureInfo.InvariantCulture);
+        var query = GXSelectArgs.Select(schema.Columns);
         await using var connection = connections.CreateConnection(database);
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        var conditions = new List<string>();
+        var columnFilters = new List<(GXColumnSchema Column, object? value)>();
         foreach (var filter in filters ?? new Dictionary<string, string>())
         {
             var column = schema.Columns.FirstOrDefault(c => string.Equals(c.Name, filter.Key, StringComparison.Ordinal));
             if (column == null) throw new ArgumentException($"Unknown filter column '{filter.Key}'.");
             if (string.IsNullOrWhiteSpace(filter.Value)) continue;
-            string expression = database.Type switch
-            {
-                DatabaseType.MSSQL => $"CAST({Quote(column.Name)} AS NVARCHAR(MAX))",
-                DatabaseType.MySQL or DatabaseType.MariaDB => $"CAST({Quote(column.Name)} AS CHAR)",
-                DatabaseType.Oracle => $"TO_CHAR({Quote(column.Name)})",
-                DatabaseType.DB2 => $"CAST({Quote(column.Name)} AS VARCHAR(32672))",
-                DatabaseType.SapHana => $"TO_NVARCHAR({Quote(column.Name)})",
-                _ => $"CAST({Quote(column.Name)} AS TEXT)"
-            };
-            string placeholder = GXSqlParameterHelper.GetPlaceholder(database.Type, $"filter{conditions.Count}");
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = GXSqlParameterHelper.GetParameterName(placeholder);
-            parameter.Value = "%" + filter.Value.ToUpperInvariant().Replace("!", "!!").Replace("%", "!%").Replace("_", "!_").Replace("[", "![") + "%";
-            command.Parameters.Add(parameter);
-            conditions.Add($"UPPER({expression}) LIKE {placeholder} ESCAPE '!'");
+            columnFilters.Add((column, filter.Value));
         }
-        string where = conditions.Count == 0 ? "" : " WHERE " + string.Join(" AND ", conditions);
-        command.CommandText = $"SELECT COUNT(*) FROM {table}{where}";
-        var result = new GXTableData
-        {
-            TotalCount = checked(Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture))
-        };
-        string paging = database.Type switch
-        {
-            DatabaseType.MSSQL or DatabaseType.Oracle or DatabaseType.DB2 => $"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY",
-            _ => $"LIMIT {limit} OFFSET {offset}"
-        };
-        // SQL Server requires an expression rather than a column ordinal in ORDER BY.
-        if (keys.Length == 0 && database.Type == DatabaseType.MSSQL) order = "(SELECT NULL)";
-        command.CommandText = $"SELECT * FROM {table}{where} ORDER BY {order} {paging}";
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        for (int i = 0; i < reader.FieldCount; ++i) result.Columns.Add(reader.GetName(i));
-        while (await reader.ReadAsync(cancellationToken))
+        query.Where.FilterBy(columnFilters.AsEnumerable());
+        var countQuery = GXSelectArgs.From(() => GXSql.As(GXSql.Subquery<object>(query), "rows"));
+        countQuery.Columns.Add(GXSqlExpressions.CountExpression());
+        var result = new GXTableData();
+        var databaseConnection = new GXDbConnection(connection);
+        result.TotalCount = checked((int)(await databaseConnection.SelectAsync<long>(null, countQuery, cancellationToken)).Single());
+        query.Index = checked((uint)startIndex);
+        query.Count = checked((uint)count);
+        var orderColumns = schema.Columns.Where(c => c.IsPrimaryKey).ToArray();
+        if (orderColumns.Length == 0)
+            orderColumns = schema.Columns.Where(c => c.Type != typeof(byte[])).Take(1).ToArray();
+        if (orderColumns.Length == 0)
+            throw new NotSupportedException("Paging requires a sortable column.");
+        query.OrderBy.AddRange(orderColumns.Select(c => ((E)E.Constant(c), false)));
+        var selectedRows = await databaseConnection.SelectAsync<object[]>(null, query, cancellationToken);
+        foreach (var column in schema.Columns) result.Columns.Add(column.Name);
+        foreach (var values in selectedRows)
         {
             var row = new GXTableDataRow { Id = startIndex + result.Rows.Count };
-            for (int i = 0; i < reader.FieldCount; ++i)
-                row.Values.Add(JsonSerializer.SerializeToElement(reader.IsDBNull(i) ? null : reader.GetValue(i)));
+            foreach (var value in values)
+                row.Values.Add(JsonSerializer.SerializeToElement(value is DBNull ? null : value));
             result.Rows.Add(row);
         }
         return result;
     }
 }
-

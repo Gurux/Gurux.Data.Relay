@@ -39,22 +39,38 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Gurux.Data.Relay.Shared;
 
-/// <summary>Persisted execution state for a Data Vault mapping.</summary>
+/// <summary>
+/// Persisted execution state for a Data Vault mapping.
+/// </summary>
 [DataContract]
 public sealed class GXDataVaultMappingState : IUnique<Guid>, IGXEntityMetadata
 {
     [DataMember, DatabaseGenerated(DatabaseGeneratedOption.None)]
     [Gurux.Service.Orm.Common.ForeignKey(typeof(GXDataVaultTableMapping), OnDelete = ForeignKeyDelete.Cascade)]
     public Guid Id { get; set; }
-    [DataMember] public DateTimeOffset? CreationTime { get; set; }
-    [DataMember] public DateTimeOffset? Updated { get; set; }
-    [DataMember, StringLength(36), ConcurrencyCheck] public string? ConcurrencyStamp { get; set; }
-    [DataMember] public Guid RunId { get; set; }
-    [DataMember] public DateTimeOffset? LastStarted { get; set; }
-    [DataMember] public DateTimeOffset? LastCompleted { get; set; }
-    [DataMember] public DateTimeOffset? LastSuccessfulRun { get; set; }
-    [DataMember] public string Status { get; set; } = "Never run";
-    [DataMember] public long? RowCount { get; set; }
-    [DataMember] public long? DurationMs { get; set; }
-    [DataMember] public string? Error { get; set; }
+
+    [DataMember]
+    public DateTimeOffset? CreationTime { get; set; }
+    [DataMember]
+    public DateTimeOffset? Updated { get; set; }
+
+    [DataMember, StringLength(36), ConcurrencyCheck]
+    public string? ConcurrencyStamp { get; set; }
+    [DataMember]
+    public Guid RunId { get; set; }
+    [DataMember]
+    public DateTimeOffset? LastStarted { get; set; }
+    [DataMember]
+    public DateTimeOffset? LastCompleted { get; set; }
+    [DataMember]
+    public DateTimeOffset? LastSuccessfulRun { get; set; }
+    [DataMember]
+    public string Status { get; set; } = "Never run";
+    [DataMember]
+    public long? RowCount { get; set; }
+    [DataMember]
+    public long? DurationMs { get; set; }
+
+    [DataMember]
+    public string? Error { get; set; }
 }

@@ -31,8 +31,12 @@
 //---------------------------------------------------------------------------
 *@
 
+@using Gurux.UI.Components.Enums
+
 @implements IAsyncDisposable
 @inject IJSRuntime JS
+@inject IGXProgress Progress
+@inject IGXNotificationService NotificationService
 
 <div class="gx-mermaid">
     <div class="gx-mermaid-toolbar" role="group" aria-label="Diagram zoom">
@@ -41,10 +45,7 @@
         <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(!_ready || _zoom >= 4)" @onclick="() => ZoomAsync(_zoom * 1.25)" aria-label="Zoom in">+</button>
         <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@(!_ready)" @onclick="() => ZoomAsync(1)">Reset zoom</button>
     </div>
-    @if (_error is not null)
-    {
-        <p class="alert alert-danger" role="alert">@_error</p>
-    }
+
     @if (string.IsNullOrWhiteSpace(Source))
     {
         <p role="status">No diagram to display.</p>
@@ -55,6 +56,7 @@
 </div>
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     /// <summary>Mermaid source, for example the result of GXSchemaManager.ExportMermaid().</summary>
     [Parameter] public string? Source { get; set; }
     [Parameter] public string Height { get; set; } = "600px";
@@ -63,16 +65,16 @@
     private ElementReference _host;
     private IJSObjectReference? _module;
     private string? _renderedSource;
-    private string? _error;
     private bool _initialized, _rendering, _ready, _disposed;
     private double _zoom = 1;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        using var progress = Progress.ProgressStart("Rendering diagram…");
         if (_disposed || _rendering || (_initialized && _renderedSource == Source)) return;
         _rendering = true;
         _ready = false;
-        _error = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         StateHasChanged();
         try
         {
@@ -83,7 +85,7 @@
                 _initialized = true;
                 _renderedSource = source;
                 _zoom = 1;
-                _error = null;
+                NotificationService.RemoveByKey(_notificationKey + "_error");
                 try
                 {
                     await _module.InvokeVoidAsync("render", _host, source);
@@ -92,7 +94,7 @@
                 catch (JSException ex)
                 {
                     _ready = false;
-                    _error = $"Unable to display diagram: {ex.Message}";
+                    NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"Unable to display diagram: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true));
                 }
             }
         }
@@ -100,7 +102,7 @@
         {
             _initialized = true;
             _renderedSource = Source;
-            _error = $"Unable to load diagram viewer: {ex.Message}";
+            NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"Unable to load diagram viewer: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true));
         }
         finally
         {

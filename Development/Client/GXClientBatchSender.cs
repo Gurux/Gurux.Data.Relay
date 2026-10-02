@@ -1,3 +1,4 @@
+using E = System.Linq.Expressions.Expression;
 //
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -39,9 +40,7 @@ using Gurux.Data.Relay.Database;
 using Gurux.Data.Relay.Transport;
 using Gurux.Service.Orm;
 using Gurux.Service.Orm.Model;
-using Gurux.Service.Orm.Settings;
 using Microsoft.Extensions.Logging;
-using System.Reflection;
 using Gurux.Data.Relay.Shared;
 using Gurux.Service.Orm.Common.Enums;
 using Gurux.Data.Relay.Shared.Enums;
@@ -127,7 +126,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
         await connection.OpenAsync(cancellationToken);
         await using GXDbConnection guruxConnection = new(connection);
         GXSchemaManager schemaManager = new(guruxConnection);
-        GXDBSettings settings = GetSettings(schemaManager);
 
         GXClientState state = await _configurationService.LoadClientStateAsync(cancellationToken) ?? new GXClientState();
 
@@ -138,7 +136,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
         GXPreparedBatch? batch = await ReadBatchAsync(
             connection,
             schemaManager,
-            settings,
             database.Type,
             tableConfiguration,
             tableConfiguration.DeleteSourceRowsAfterTransfer ? null : tableState,
@@ -168,7 +165,7 @@ public sealed class GXClientBatchSender : IClientBatchSender
         GXDataAcknowledgement acknowledgement = await SendToConfiguredTransportsAsync(configuration.GetTransports(databaseIndex, tableConfiguration.Name), batch.Message, cancellationToken);
 
         if (tableConfiguration.DeleteSourceRowsAfterTransfer)
-            await DeleteSourceRowsAsync(connection, schemaManager, settings, database.Type, tableConfiguration, batch.Message, cancellationToken);
+            await DeleteSourceRowsAsync(connection, schemaManager, database.Type, tableConfiguration, batch.Message, cancellationToken);
 
         UpdateState(state, stateTableName, databaseIndex, acknowledgement.MessageId, batch.Message.Changes.Count, batch.CheckpointValue);
         await _configurationService.SaveClientStateAsync(state, cancellationToken);
@@ -210,7 +207,7 @@ public sealed class GXClientBatchSender : IClientBatchSender
     }
 
     private static async Task DeleteSourceRowsAsync(DbConnection connection, GXSchemaManager schemaManager,
-        GXDBSettings settings, DatabaseType databaseType, GXTableConfiguration table,
+        DatabaseType databaseType, GXTableConfiguration table,
         GXDataMessage message, CancellationToken cancellationToken)
     {
         var schema = schemaManager.Describe(table.Name);
@@ -220,25 +217,16 @@ public sealed class GXClientBatchSender : IClientBatchSender
             var values = change.Values;
             if (values is null || table.Keys.Any(key => !values.Keys.Contains(key, StringComparer.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("The acknowledged row does not contain its source keys.");
-            await using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            List<string> predicates = [];
+            List<E> predicates = [];
             foreach (var pair in values)
             {
                 var column = schema.Columns.Single(column => string.Equals(column.Name, pair.Key, StringComparison.OrdinalIgnoreCase));
-                string identifier = QuoteIdentifier(settings, column.Name, false);
-                if (pair.Value.ValueKind == JsonValueKind.Null)
-                    predicates.Add($"{identifier} IS NULL");
-                else
-                {
-                    string parameter = GXSqlParameterHelper.GetPlaceholder(databaseType, $"source{predicates.Count}");
-                    predicates.Add($"{identifier} = {parameter}");
-                    AddParameter(command, parameter, Gurux.Data.Relay.Server.GXServerValueConversionHelper.ConvertJsonValue(
-                        pair.Value, column.Type ?? typeof(string), databaseType), databaseType);
-                }
+                object? value = pair.Value.ValueKind == JsonValueKind.Null ? null : Gurux.Data.Relay.Server.GXServerValueConversionHelper.ConvertJsonValue(
+                    pair.Value, column.Type ?? typeof(string), databaseType);
+                predicates.Add(GXSqlExpressions.Equal(E.Constant(column), GXSqlExpressions.Value(value)));
             }
-            command.CommandText = $"DELETE FROM {QuoteIdentifier(settings, schema.ToString(), true)} WHERE {string.Join(" AND ", predicates)}";
-            int deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+            if (predicates.Count == 0) throw new InvalidOperationException("Source row has no values.");
+            int deleted = await new GXDbConnection(connection).DeleteAsync(transaction, GXDeleteArgs.Delete(schema, GXSqlExpressions.And(predicates.ToArray())), cancellationToken);
             if (deleted > 1) throw new InvalidOperationException("Source keys matched more than one row.");
             // A row changed during transmission is retained for the next transfer.
         }
@@ -338,7 +326,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
     private static async Task<GXPreparedBatch?> ReadBatchAsync(
         DbConnection connection,
         GXSchemaManager schemaManager,
-        GXDBSettings settings,
         DatabaseType databaseType,
         GXTableConfiguration tableConfiguration,
         GXClientTableState? tableState,
@@ -358,16 +345,15 @@ public sealed class GXClientBatchSender : IClientBatchSender
                 throw new InvalidOperationException("ContentHash cannot be combined with an incremental column or deleting source rows after transfer.");
             var tracker = new GXContentHashTracker(columns.Select(c => c.Name), tableConfiguration.Keys,
                 tableConfiguration.ChangeTracking.HashColumns, tableState?.LastCheckpointValue, batchSize);
-            await using var hashCommand = connection.CreateCommand();
-            hashCommand.CommandText = BuildSelectSql(settings, databaseType, tableSchema.ToString(), columns, null, null);
-            await using var hashReader = await hashCommand.ExecuteReaderAsync(cancellationToken);
+            var hashQuery = BuildSelectQuery(tableSchema.ToString(), columns, null, null);
+            var hashRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, hashQuery, cancellationToken);
             // Scan every row, including after the batch fills, to reject duplicate keys before sending.
-            while (await hashReader.ReadAsync(cancellationToken))
+            foreach (var hashRow in hashRows)
             {
                 Dictionary<string, JsonElement> values = new(StringComparer.OrdinalIgnoreCase);
                 foreach (var column in columns)
                 {
-                    var value = hashReader[column.Name];
+                    var value = hashRow[columns.IndexOf(column)];
                     values[column.Name] = value is DBNull ? JsonSerializer.SerializeToElement<object?>(null) : JsonSerializer.SerializeToElement(value);
                 }
                 tracker.Add(values);
@@ -384,37 +370,30 @@ public sealed class GXClientBatchSender : IClientBatchSender
         }
         if (tableConfiguration.ChangeTracking.Type == ChangeTrackingType.LastRow)
         {
-            return await ReadLastRowBatchAsync(connection, settings, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
+            return await ReadLastRowBatchAsync(connection, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
         }
         if (tableConfiguration.ChangeTracking.Type == ChangeTrackingType.Timestamp)
         {
-            return await ReadTimestampBatchAsync(connection, settings, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
+            return await ReadTimestampBatchAsync(connection, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
         }
         if (tableConfiguration.ChangeTracking.Type == ChangeTrackingType.Version)
         {
-            return await ReadVersionBatchAsync(connection, settings, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
+            return await ReadVersionBatchAsync(connection, databaseType, tableSchema, columns, tableConfiguration, tableState, batchSize, cancellationToken);
         }
 
         GXColumnSchema? incrementalColumn = ResolveIncrementalColumn(tableSchema, tableConfiguration);
-        string sql = BuildSelectSql(settings, databaseType, tableSchema.ToString(), columns, incrementalColumn, tableState?.LastCheckpointValue);
+        var query = BuildSelectQuery(tableSchema.ToString(), columns, incrementalColumn, tableState?.LastCheckpointValue);
 
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
-        if (incrementalColumn is not null && !string.IsNullOrWhiteSpace(tableState?.LastCheckpointValue))
-        {
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint"), ParseCheckpointValue(tableState!.LastCheckpointValue!, incrementalColumn.Type), databaseType);
-        }
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
         List<GXDataChange> changes = [];
-        while (changes.Count < batchSize && await reader.ReadAsync(cancellationToken))
+        foreach (var selectedRow in selectedRows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (changes.Count >= batchSize) break;
             Dictionary<string, JsonElement> values = new(StringComparer.OrdinalIgnoreCase);
             foreach (GXColumnSchema column in columns)
             {
-                object? value = reader[column.Name];
+                object? value = selectedRow[columns.IndexOf(column)];
                 values[column.Name] = value is DBNull ? JsonSerializer.SerializeToElement<object?>(null) : JsonSerializer.SerializeToElement(value);
             }
 
@@ -436,7 +415,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
 
     private static async Task<GXPreparedBatch?> ReadLastRowBatchAsync(
         DbConnection connection,
-        GXDBSettings settings,
         DatabaseType databaseType,
         GXTableSchema tableSchema,
         List<GXColumnSchema> columns,
@@ -446,26 +424,19 @@ public sealed class GXClientBatchSender : IClientBatchSender
         CancellationToken cancellationToken)
     {
         GXColumnSchema lastRowColumn = ResolveLastRowColumn(tableSchema, tableConfiguration);
-        string sql = BuildSelectSql(settings, databaseType, tableSchema.ToString(), columns, lastRowColumn, tableState?.LastCheckpointValue);
+        var query = BuildSelectQuery(tableSchema.ToString(), columns, lastRowColumn, tableState?.LastCheckpointValue);
 
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
-        if (!string.IsNullOrWhiteSpace(tableState?.LastCheckpointValue))
-        {
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint"), ParseCheckpointValue(tableState!.LastCheckpointValue!, lastRowColumn.Type), databaseType);
-        }
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
         List<GXDataChange> changes = [];
         string? checkpoint = tableState?.LastCheckpointValue;
-        while (changes.Count < batchSize && await reader.ReadAsync(cancellationToken))
+        foreach (var selectedRow in selectedRows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (changes.Count >= batchSize) break;
             Dictionary<string, JsonElement> values = new(StringComparer.OrdinalIgnoreCase);
             foreach (GXColumnSchema column in columns)
             {
-                object? value = reader[column.Name];
+                object? value = selectedRow[columns.IndexOf(column)];
                 values[column.Name] = value is DBNull ? JsonSerializer.SerializeToElement<object?>(null) : JsonSerializer.SerializeToElement(value);
             }
 
@@ -488,7 +459,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
 
     private static async Task<GXPreparedBatch?> ReadTimestampBatchAsync(
         DbConnection connection,
-        GXDBSettings settings,
         DatabaseType databaseType,
         GXTableSchema tableSchema,
         List<GXColumnSchema> columns,
@@ -500,28 +470,20 @@ public sealed class GXClientBatchSender : IClientBatchSender
         GXColumnSchema? createdColumn = ResolveTrackedColumn(tableSchema, tableConfiguration.ChangeTracking.CreatedColumn);
         GXColumnSchema? updatedColumn = ResolveTrackedColumn(tableSchema, tableConfiguration.ChangeTracking.UpdatedColumn);
         GXColumnSchema? deletedColumn = ResolveTrackedColumn(tableSchema, tableConfiguration.ChangeTracking.DeletedColumn);
-        string sql = BuildTimestampSelectSql(settings, databaseType, tableSchema.ToString(), columns, createdColumn, updatedColumn, deletedColumn, tableState?.LastCheckpointValue);
+        var query = BuildTimestampSelectQuery(tableSchema.ToString(), columns, createdColumn, updatedColumn, deletedColumn, tableState?.LastCheckpointValue);
+        DateTimeOffset? checkpoint = string.IsNullOrWhiteSpace(tableState?.LastCheckpointValue) ? null : DateTimeOffset.Parse(tableState.LastCheckpointValue!);
 
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
-        DateTimeOffset? checkpoint = null;
-        if (!string.IsNullOrWhiteSpace(tableState?.LastCheckpointValue))
-        {
-            checkpoint = DateTimeOffset.Parse(tableState.LastCheckpointValue!);
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint"), checkpoint.Value, databaseType);
-        }
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
         List<GXDataChange> changes = [];
         DateTimeOffset? maxCheckpoint = checkpoint;
-        while (changes.Count < batchSize && await reader.ReadAsync(cancellationToken))
+        foreach (var selectedRow in selectedRows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (changes.Count >= batchSize) break;
             Dictionary<string, JsonElement> values = new(StringComparer.OrdinalIgnoreCase);
             foreach (GXColumnSchema column in columns)
             {
-                object? value = reader[column.Name];
+                object? value = selectedRow[columns.IndexOf(column)];
                 values[column.Name] = value is DBNull ? JsonSerializer.SerializeToElement<object?>(null) : JsonSerializer.SerializeToElement(value);
             }
 
@@ -574,7 +536,6 @@ public sealed class GXClientBatchSender : IClientBatchSender
 
     private static async Task<GXPreparedBatch?> ReadVersionBatchAsync(
         DbConnection connection,
-        GXDBSettings settings,
         DatabaseType databaseType,
         GXTableSchema tableSchema,
         List<GXColumnSchema> columns,
@@ -584,27 +545,21 @@ public sealed class GXClientBatchSender : IClientBatchSender
         CancellationToken cancellationToken)
     {
         GXColumnSchema versionColumn = ResolveVersionColumn(tableSchema, tableConfiguration);
-        string sql = BuildVersionSelectSql(settings, databaseType, tableSchema.ToString(), columns, versionColumn, tableState?.LastCheckpointValue);
-
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = sql;
-
         bool hasCheckpoint = !string.IsNullOrWhiteSpace(tableState?.LastCheckpointValue);
-        if (hasCheckpoint)
-        {
-            AddParameter(command, GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint"), ParseCheckpointValue(tableState!.LastCheckpointValue!, versionColumn.Type), databaseType);
-        }
+        var query = BuildSelectQuery(tableSchema.ToString(), columns, versionColumn, tableState?.LastCheckpointValue);
+        if (!hasCheckpoint) query.OrderBy.Clear();
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        var selectedRows = await new GXDbConnection(connection).SelectAsync<object[]>(null, query, cancellationToken);
         List<GXDataChange> changes = [];
         string? maxCheckpoint = tableState?.LastCheckpointValue;
-        while (changes.Count < batchSize && await reader.ReadAsync(cancellationToken))
+        foreach (var selectedRow in selectedRows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (changes.Count >= batchSize) break;
             Dictionary<string, JsonElement> values = new(StringComparer.OrdinalIgnoreCase);
             foreach (GXColumnSchema column in columns)
             {
-                object? value = reader[column.Name];
+                object? value = selectedRow[columns.IndexOf(column)];
                 values[column.Name] = value is DBNull ? JsonSerializer.SerializeToElement<object?>(null) : JsonSerializer.SerializeToElement(value);
             }
 
@@ -679,28 +634,17 @@ public sealed class GXClientBatchSender : IClientBatchSender
         return columns;
     }
 
-    private static string BuildSelectSql(
-        GXDBSettings settings,
-        DatabaseType databaseType,
-        string tableName,
-        List<GXColumnSchema> columns,
-        GXColumnSchema? incrementalColumn,
-        string? checkpointValue)
+    private static GXSelectArgs BuildSelectQuery(string tableName, List<GXColumnSchema> columns,
+        GXColumnSchema? incrementalColumn, string? checkpointValue)
     {
-        string selectedColumns = string.Join(", ", columns.Select(column => QuoteIdentifier(settings, column.Name, isTable: false)));
-        string sql = $"SELECT {selectedColumns} FROM {QuoteIdentifier(settings, tableName, isTable: true)}";
-        if (incrementalColumn is not null && !string.IsNullOrWhiteSpace(checkpointValue))
+        var query = GXSelectArgs.Select(columns);
+        if (incrementalColumn != null)
         {
-            string columnName = QuoteIdentifier(settings, incrementalColumn.Name, isTable: false);
-            sql += $" WHERE {columnName} > {GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint")}";
+            query.OrderBy.Add(E.Constant(incrementalColumn));
+            if (!string.IsNullOrWhiteSpace(checkpointValue))
+                query.Where.Set(GXSqlExpressions.Greater(E.Constant(incrementalColumn), GXSqlExpressions.Value(ParseCheckpointValue(checkpointValue, incrementalColumn.Type))));
         }
-        if (incrementalColumn is not null)
-        {
-            string columnName = QuoteIdentifier(settings, incrementalColumn.Name, isTable: false);
-            sql += $" ORDER BY {columnName}";
-        }
-
-        return sql;
+        return query;
     }
 
     private static GXColumnSchema? ResolveIncrementalColumn(GXTableSchema tableSchema, GXTableConfiguration tableConfiguration)
@@ -795,84 +739,20 @@ public sealed class GXClientBatchSender : IClientBatchSender
         return last?.ToString();
     }
 
-    private static string BuildTimestampSelectSql(
-        GXDBSettings settings,
-        DatabaseType databaseType,
-        string tableName,
-        List<GXColumnSchema> columns,
-        GXColumnSchema? createdColumn,
-        GXColumnSchema? updatedColumn,
-        GXColumnSchema? deletedColumn,
-        string? checkpointValue)
+    private static GXSelectArgs BuildTimestampSelectQuery(string tableName, List<GXColumnSchema> columns,
+        GXColumnSchema? createdColumn, GXColumnSchema? updatedColumn, GXColumnSchema? deletedColumn, string? checkpointValue)
     {
-        string selectedColumns = string.Join(", ", columns.Select(column => QuoteIdentifier(settings, column.Name, isTable: false)));
-        string sql = $"SELECT {selectedColumns} FROM {QuoteIdentifier(settings, tableName, isTable: true)}";
+        var query = BuildSelectQuery(tableName, columns, null, null);
         if (!string.IsNullOrWhiteSpace(checkpointValue))
         {
-            List<string> filters = [];
-            string checkpointPlaceholder = GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint");
-            if (createdColumn is not null)
-            {
-                filters.Add($"{QuoteIdentifier(settings, createdColumn.Name, isTable: false)} > {checkpointPlaceholder}");
-            }
-            if (updatedColumn is not null)
-            {
-                filters.Add($"{QuoteIdentifier(settings, updatedColumn.Name, isTable: false)} > {checkpointPlaceholder}");
-            }
-            if (deletedColumn is not null)
-            {
-                filters.Add($"{QuoteIdentifier(settings, deletedColumn.Name, isTable: false)} > {checkpointPlaceholder}");
-            }
-
-            if (filters.Count == 0)
-            {
-                throw new InvalidOperationException("Timestamp change tracking requires at least one CreatedColumn, UpdatedColumn or DeletedColumn value.");
-            }
-
-            sql += $" WHERE ({string.Join(" OR ", filters)})";
-            string orderExpression = BuildTimestampOrderExpression(settings, createdColumn, updatedColumn, deletedColumn);
-            sql += $" ORDER BY {orderExpression}";
+            var tracked = new[] { deletedColumn, updatedColumn, createdColumn }.OfType<GXColumnSchema>().ToArray();
+            if (tracked.Length == 0) throw new InvalidOperationException("Timestamp change tracking requires at least one CreatedColumn, UpdatedColumn or DeletedColumn value.");
+            var checkpoint = DateTimeOffset.Parse(checkpointValue);
+            query.Where.Set(GXSqlExpressions.Or(tracked.Select(c => GXSqlExpressions.Greater(E.Constant(c), GXSqlExpressions.Value(checkpoint))).ToArray()));
+            var order = tracked.Select(c => E.Constant(c)).ToArray();
+            query.OrderBy.Add(order.Skip(1).Aggregate((E)order[0], (left, right) => E.Coalesce(left, right)));
         }
-
-        return sql;
-    }
-
-    private static string BuildVersionSelectSql(
-        GXDBSettings settings,
-        DatabaseType databaseType,
-        string tableName,
-        List<GXColumnSchema> columns,
-        GXColumnSchema versionColumn,
-        string? checkpointValue)
-    {
-        string selectedColumns = string.Join(", ", columns.Select(column => QuoteIdentifier(settings, column.Name, isTable: false)));
-        string versionName = QuoteIdentifier(settings, versionColumn.Name, isTable: false);
-        string sql = $"SELECT {selectedColumns} FROM {QuoteIdentifier(settings, tableName, isTable: true)}";
-        if (!string.IsNullOrWhiteSpace(checkpointValue))
-        {
-            sql += $" WHERE {versionName} > {GXSqlParameterHelper.GetPlaceholder(databaseType, "checkpoint")} ORDER BY {versionName}";
-        }
-
-        return sql;
-    }
-
-    private static string BuildTimestampOrderExpression(GXDBSettings settings, GXColumnSchema? createdColumn, GXColumnSchema? updatedColumn, GXColumnSchema? deletedColumn)
-    {
-        List<string> parts = [];
-        if (deletedColumn is not null)
-        {
-            parts.Add(QuoteIdentifier(settings, deletedColumn.Name, isTable: false));
-        }
-        if (updatedColumn is not null)
-        {
-            parts.Add(QuoteIdentifier(settings, updatedColumn.Name, isTable: false));
-        }
-        if (createdColumn is not null)
-        {
-            parts.Add(QuoteIdentifier(settings, createdColumn.Name, isTable: false));
-        }
-
-        return parts.Count == 1 ? parts[0] : $"COALESCE({string.Join(", ", parts)})";
+        return query;
     }
 
     private static DateTimeOffset? Max(DateTimeOffset? current, DateTimeOffset? candidate)
@@ -909,29 +789,4 @@ public sealed class GXClientBatchSender : IClientBatchSender
         return checkpointValue;
     }
 
-    private static void AddParameter(DbCommand command, string name, object? value, DatabaseType databaseType)
-    {
-        DbParameter parameter = command.CreateParameter();
-        parameter.ParameterName = GXSqlParameterHelper.GetParameterName(name);
-        parameter.Value = GXSqlParameterHelper.NormalizeParameterValue(databaseType, value) ?? DBNull.Value;
-        command.Parameters.Add(parameter);
-    }
-
-    private static GXDBSettings GetSettings(GXSchemaManager schemaManager)
-    {
-        FieldInfo? builderField = typeof(GXSchemaManager).GetField("Builder", BindingFlags.Instance | BindingFlags.NonPublic);
-        object builder = builderField?.GetValue(schemaManager)
-            ?? throw new InvalidOperationException("Failed to access Gurux SQL builder.");
-        PropertyInfo? settingsProperty = builder.GetType().GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        return (GXDBSettings?)settingsProperty?.GetValue(builder)
-            ?? throw new InvalidOperationException("Failed to access Gurux database settings.");
-    }
-
-    private static string QuoteIdentifier(GXDBSettings settings, string identifier, bool isTable)
-    {
-        return GXSqlIdentifierHelper.QuoteIdentifier(settings, identifier, isTable);
-    }
 }
-
-
-

@@ -32,31 +32,17 @@
 *@
 
 @using Gurux.Data.Relay.Shared
+@using Gurux.UI.Components.Enums
 @implements IAsyncDisposable
 @inject GXRealtimeClient Realtime
-
-@if (!Realtime.Connected)
-{
-    <p class="alert alert-secondary" role="status">Live updates disconnected. Reconnecting automatically…</p>
-}
-@if (_state.HasConflict)
-{
-    <p class="alert alert-warning" role="alert">This information changed elsewhere. Your edits have been preserved. Cancel or discard your changes to load the latest values.</p>
-}
-@if (Realtime.Editors.Any(e => e.Resource == Resource && e.Connections.Any(c => c != Realtime.ConnectionId)))
-{
-    <p class="alert alert-warning" role="status">Another user is editing these settings.</p>
-}
-@if (_error is not null)
-{
-    <p class="alert alert-danger" role="alert">@_error</p>
-}
+@inject IGXNotificationService NotificationService
 
 <fieldset disabled="@(_refreshing || Busy)" inert="@(_refreshing || Busy ? string.Empty : null)" class="live-view" aria-busy="@(_refreshing || Busy)">
     @ChildContent
 </fieldset>
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     [Parameter] public string? Mode { get; set; }
     [Parameter] public GXRelayChangeKind Kinds { get; set; } = GXRelayChangeKind.Configuration;
     [Parameter] public Func<bool>? IsEditing { get; set; }
@@ -71,7 +57,14 @@
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _retry;
     private bool _disposed, _refreshing, _again;
-    private string? _announced, _error;
+    private string? _announced;
+    private string? _connectionNotice, _conflictNotice, _editorNotice;
+    private void UpdateNotifications()
+    {
+        NotificationService.SetMessage(ref _connectionNotice, Realtime.Connected ? null : "Live updates disconnected. Reconnecting automatically…", _notificationKey + "connection", NotificationLevel.Warning);
+        NotificationService.SetMessage(ref _conflictNotice, _state.HasConflict ? "This information changed elsewhere. Your edits have been preserved. Cancel or discard your changes to load the latest values." : null, _notificationKey + "conflict", NotificationLevel.Warning);
+        NotificationService.SetMessage(ref _editorNotice, Realtime.Editors.Any(e => e.Resource == Resource && e.Connections.Any(c => c != Realtime.ConnectionId)) ? "Another user is editing these settings." : null, _notificationKey + "editor", NotificationLevel.Warning);
+    }
     private bool Editing => IsEditing?.Invoke() == true;
 
     protected override void OnInitialized()
@@ -90,10 +83,13 @@
             await Realtime.SetEditingAsync(_owner, resource);
         }
         if (_state.Resume(Editing)) await ReloadAsync();
+        UpdateNotifications();
     }
 
     private Task ReceiveAsync(GXRelayChange[] changes) => InvokeAsync(async () =>
     {
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         if (_disposed)
         {
             return;
@@ -106,11 +102,11 @@
             try
             {
                 await OnStateChanged.InvokeAsync();
-                _error = null;
+                NotificationService.RemoveByKey(_notificationKey + "_error");
             }
             catch (Exception ex)
             {
-                _error = $"State update failed: {ex.Message}";
+                NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"State update failed: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true));
             }
             StateHasChanged();
             return;
@@ -122,6 +118,8 @@
 
     private async Task ReloadAsync()
     {
+        NotificationService.RemoveByKey(_notificationKey + "_error");
+
         if (_refreshing) { _again = true; return; }
         _refreshing = true;
         StateHasChanged();
@@ -134,12 +132,12 @@
                 // A user can start editing while an earlier reload is in flight.
                 if (Editing) { _state.Receive(true, false); return; }
                 await OnChanged.InvokeAsync();
-                _error = null;
+                NotificationService.RemoveByKey(_notificationKey + "_error");
             } while (_again);
         }
         catch (Exception ex)
         {
-            _error = $"Live update failed. Retrying automatically: {ex.Message}";
+            NotificationService.RemoveByKey(_notificationKey + "_error"); NotificationService.Add(new GXNotificationItem(NotificationLevel.Error, $"Live update failed. Retrying automatically: {ex.Message}", ex.ToString(), _notificationKey + "_error", Closable: true));
             _retry ??= RetryAsync();
         }
         finally { _refreshing = false; if (!_disposed) StateHasChanged(); }
@@ -164,6 +162,9 @@
         _lifetime.Cancel();
         Realtime.Changed -= ReceiveAsync;
         Realtime.StatusChanged -= StatusChanged;
+        NotificationService.RemoveByKey(_notificationKey + "connection");
+        NotificationService.RemoveByKey(_notificationKey + "conflict");
+        NotificationService.RemoveByKey(_notificationKey + "editor");
         await Realtime.SetEditingAsync(_owner, null);
     }
 }

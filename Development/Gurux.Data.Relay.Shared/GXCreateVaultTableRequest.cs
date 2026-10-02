@@ -40,6 +40,8 @@ public sealed class GXCreateVaultTableRequest
     public bool AddMapping { get; set; } = true;
     public bool UseExistingTable { get; set; }
     public bool CreateIfMissing { get; set; } = true;
+    /// <summary>Drop an existing target table, including its data, and recreate it. Defaults to false.</summary>
+    public bool Overwrite { get; set; }
     public string? BusinessKeyColumn { get; set; }
     public string? TargetBusinessKeyColumn { get; set; }
     /// <summary>Maps generated column names to selected columns in an existing target table.</summary>

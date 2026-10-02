@@ -1,3 +1,38 @@
+//
+// --------------------------------------------------------------------------
+//  Gurux Ltd
+// 
+//
+//
+// Filename:        $HeadURL$
+//
+// Version:         $Revision$,
+//                  $Date$
+//                  $Author$
+//
+// Copyright (c) Gurux Ltd
+//
+//---------------------------------------------------------------------------
+//
+//  DESCRIPTION
+//
+// This file is a part of Gurux Device Framework.
+//
+// Gurux Device Framework is Open Source software; you can redistribute it
+// and/or modify it under the terms of the GNU General Public License 
+// as published by the Free Software Foundation; version 2 of the License.
+// Gurux Device Framework is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of 
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+// See the GNU General Public License for more details.
+//
+// This code is licensed under the GNU General Public License v2. 
+// Full text may be retrieved at http://www.gnu.org/licenses/gpl-2.0.txt
+//---------------------------------------------------------------------------
+
+using Gurux.Service.Orm.Common.Model;
+using E = System.Linq.Expressions.Expression;
+using Gurux.Service.Orm;
 using System.Data.Common;
 using Gurux.Service.Orm.Common.Enums;
 using Gurux.Service.Orm.Model;
@@ -24,49 +59,29 @@ public static class GXApplicationTableReset
         foreach (var (table, schema) in descriptions)
             if (!selected.Contains(table) && schema.ForeignKeys.Any(k => selected.Contains(k.ReferencedTable)))
                 throw new InvalidOperationException($"Reset refused: unrelated table '{table}' references a selected table.");
-        string Quote(string name) => provider switch
-        {
-            DatabaseType.MSSQL => "[" + name.Replace("]", "]]") + "]",
-            DatabaseType.MySQL or DatabaseType.MariaDB => "`" + name.Replace("`", "``") + "`",
-            _ => "\"" + name.Replace("\"", "\"\"") + "\""
-        };
-        // SQL Server enumeration is restricted to dbo; do not resolve a same-name
-        // table through the login's possibly different default schema.
-        string QuoteTable(string name) => provider == DatabaseType.MSSQL ? "[dbo]." + Quote(name) : Quote(name);
-        void Run(string sql)
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = sql;
-            command.ExecuteNonQuery();
-        }
+        GXTableSchema PhysicalTable(string name) => provider == DatabaseType.MSSQL ? new GXTableSchema { Name = name, Schema = "dbo" } : new GXTableSchema { Name = name };
         bool sqlite = provider == DatabaseType.SqLite;
-        object? enforcement = null;
-        if (sqlite)
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA foreign_keys";
-            enforcement = command.ExecuteScalar();
-        }
+        bool enforcement = sqlite && GXResetSchemaOperations.GetForeignKeyEnforcement(connection, provider);
         foreach (var table in selected) report?.Invoke("Will remove table and all rows: " + table);
         try
         {
-            if (sqlite) Run("PRAGMA foreign_keys=OFF");
+            if (sqlite) GXResetSchemaOperations.SetForeignKeyEnforcement(connection, provider, false);
             else
                 foreach (var table in selected)
                     foreach (var key in descriptions[table].ForeignKeys)
                     {
-                        string drop = provider is DatabaseType.MySQL or DatabaseType.MariaDB ? "DROP FOREIGN KEY " : "DROP CONSTRAINT ";
-                        Run($"ALTER TABLE {QuoteTable(table)} {drop}{Quote(key.Name)}");
+                        var physical = PhysicalTable(table);
+                        GXResetSchemaOperations.DropForeignKey(connection, provider, new() { Name = physical.Name, Schema = physical.Schema, Catalog = physical.Catalog }, key.Name);
                     }
             foreach (var table in selected)
             {
-                Run("DROP TABLE " + QuoteTable(table));
+                manager.DropTable(PhysicalTable(table));
                 report?.Invoke("Removed: " + table);
             }
         }
         finally
         {
-            if (sqlite) Run("PRAGMA foreign_keys=" + (Convert.ToInt32(enforcement) != 0 ? "ON" : "OFF"));
+            if (sqlite) GXResetSchemaOperations.SetForeignKeyEnforcement(connection, provider, enforcement);
         }
     }
 }

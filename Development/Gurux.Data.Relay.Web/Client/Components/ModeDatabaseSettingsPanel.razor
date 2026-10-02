@@ -32,25 +32,29 @@
 *@
 
 @using Gurux.Data.Relay.Shared
+@using Gurux.UI.Components.Enums
+
+@inject IGXProgress Progress
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 
-<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _dirty || _busy)" OnChanged="LoadAsync">
+<GXLiveView Kinds="GXRelayChangeKind.Configuration" IsEditing="@(() => _dirty || Progress.IsBusy)" OnChanged="LoadAsync">
     <section class="panel">
         <h2>@Title</h2>
         <p>Select databases from the shared <a href="databases">Databases</a> catalog. Connection settings are managed there.</p>
-        @if (_message != null) { <p role="status">@_message</p> }
         @foreach (var database in _catalog)
         {
             <div @key="database.Id">
-                <label><input type="checkbox" checked="@_selected.Contains(database.Id)" disabled="@_busy"
-                    @onchange="e => Select(database.Id, e.Value is true)" />
+                <label>
+                    <input type="checkbox" checked="@_selected.Contains(database.Id)" disabled="@Progress.IsBusy"
+                           @onchange="e => Select(database.Id, e.Value is true)" />
                     @(string.IsNullOrWhiteSpace(database.Description) ? database.Id.ToString() : database.Description) (@database.Type)
                 </label>
             </div>
         }
         <div class="actions-row">
-            <button class="btn btn-primary" disabled="@(!_loaded || !_dirty || _busy)" @onclick="SaveAsync">Save selection</button>
-            <button class="btn btn-secondary" disabled="@_busy" @onclick="LoadAsync">Reload</button>
+            <button class="btn btn-primary" disabled="@(!_loaded || !_dirty || Progress.IsBusy)" @onclick="SaveAsync">Save selection</button>
+            <button class="btn btn-secondary" disabled="@Progress.IsBusy" @onclick="LoadAsync">Reload</button>
         </div>
     </section>
 </GXLiveView>
@@ -66,12 +70,13 @@
     private List<GXDatabase> _catalog = [];
     private GXSettings? _settings;
     private HashSet<Guid> _selected = [];
-    private bool _busy, _dirty, _loaded;
-    private string? _message;
+    private bool _dirty, _loaded;
     protected override Task OnParametersSetAsync() => LoadAsync();
     private async Task LoadAsync()
     {
-        if (_busy) return;
+        if (Progress.IsBusy) return;
+        NotificationService.RemoveByKey("Could not load (mode database settings)");
+
         _loaded = false;
         try
         {
@@ -80,9 +85,8 @@
             _selected = _settings.Databases.Select(d => d.Id).ToHashSet();
             _dirty = false;
             _loaded = true;
-            _message = null;
         }
-        catch (Exception ex) { _message = ex.Message; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not load (mode database settings)"); }
     }
     private void Select(Guid id, bool selected)
     {
@@ -91,8 +95,9 @@
     }
     private async Task SaveAsync()
     {
-        if (_busy || !_loaded || _settings is null) return;
-        _busy = true;
+        if (Progress.IsBusy || !_loaded || _settings is null) return;
+        NotificationService.RemoveByKey("Could not save (mode database settings)");
+
         try
         {
             var removed = _settings.Databases.Where(d => !_selected.Contains(d.Id)).ToList();
@@ -104,9 +109,8 @@
             _settings.ConcurrencyStamp = await Api.SaveDatabasesAsync(Mode, databases, default, _settings.ConcurrencyStamp);
             _settings.Databases = databases;
             _dirty = false;
-            _message = "Database selection saved.";
+            NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Database selection", "Database selection saved.", Closable: true));
         }
-        catch (Exception ex) { _message = ex.Message; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not save (mode database settings)"); }
     }
 }

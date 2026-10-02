@@ -1,3 +1,6 @@
+@inject IGXProgress Progress
+@using Gurux.UI.Components.Enums
+@inject IGXNotificationService NotificationService
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -34,9 +37,11 @@
 @page "/update"
 @inject GXAdminApiClient Api
 
-<PageTitle>Update Configuration Tables</PageTitle>
-<HelpContext Topic="update-configuration-tables" />
-<h1>Update Configuration Tables</h1>
+<PageTitle>Updates</PageTitle>
+<HelpContext Topic="software-updates" />
+<h1>Updates</h1>
+<SoftwareUpdatePanel />
+<h2>Update Configuration Tables</h2>
 @if (_changes.Count != 0)
 {
     <p>Update the following configuration tables to the current schema.</p>
@@ -46,51 +51,52 @@
             <li>@table.TableName: @string.Join("; ", table.Changes)</li>
         }
     </ul>
-    <button class="btn btn-primary" disabled="@_busy" @onclick="UpdateAsync">
-        @(_busy ? "Updating…" : "Update tables")
+    <button class="btn btn-primary" disabled="@Progress.IsBusy" @onclick="UpdateAsync">
+        @(Progress.IsBusy ? "Updating…" : "Update tables")
     </button>
 }
-else if (_message is null)
+else if (!Progress.IsBusy && _message is null)
 {
 
     <p>Configuration tables are up to date.</p>
 }
-@if (_message is not null)
-{
-    <div class="alert @(_failed ? "alert-danger" : "alert-success") mt-3" role="alert">@_message</div>
-}
+
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     private List<GXConfigurationTableChange> _changes = [];
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (!firstRender) return;
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
         try { _changes = await Api.GetConfigurationTableChangesAsync(CancellationToken.None); }
-        catch (Exception ex) { _failed = true; _message = ex.Message; }
+        catch (Exception ex) { NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error); }
+        finally
+        {
+            StateHasChanged();
+        }
     }
-    private bool _busy;
-    private bool _failed;
     private string? _message;
 
     private async Task UpdateAsync()
     {
-        if (_busy) 
+        NotificationService.RemoveByKey(_notificationKey + "_message");
+
+        if (Progress.IsBusy) 
         {
             return;
         }
-        _busy = true;
-        _message = null;
-        _failed = false;
+        NotificationService.SetMessage(ref _message, null, _notificationKey + "_message", NotificationLevel.Information);
         try
         {
             await Api.UpdateConfigurationTableAsync(CancellationToken.None);
             _changes = await Api.GetConfigurationTableChangesAsync(CancellationToken.None);
-            _message = _changes.Count == 0 ? "Configuration tables updated successfully." : "Some tables still require an update.";
+            NotificationService.SetMessage(ref _message, _changes.Count == 0 ? "Configuration tables updated successfully." : "Some tables still require an update.", _notificationKey + "_message", _changes.Count == 0 ? NotificationLevel.Success : NotificationLevel.Warning);
         }
         catch (Exception ex)
         {
-            _failed = true;
-            _message = ex.Message;
+            NotificationService.SetMessage(ref _message, ex.Message, _notificationKey + "_message", NotificationLevel.Error);
         }
-        finally { _busy = false; }
     }
 }

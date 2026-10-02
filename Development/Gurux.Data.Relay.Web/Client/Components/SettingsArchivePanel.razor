@@ -1,3 +1,4 @@
+@inject IGXProgress Progress
 @*
 // --------------------------------------------------------------------------
 //  Gurux Ltd
@@ -35,12 +36,15 @@
 @using System.Text.Json.Serialization
 @using Gurux.Data.Relay.Shared.Enums
 
+@using Gurux.UI.Components.Enums
+
+@inject IGXNotificationService NotificationService
 @inject GXAdminApiClient Api
 
 <section class="panel">
     <h2>Import / export all settings</h2>
     <p>One JSON file contains all client, server and Data Vault settings, including connection strings and passwords. Keep it private. Database data and transfer history are not included.</p>
-    <fieldset disabled="@_busy">
+    <fieldset disabled="@Progress.IsBusy">
         <div class="actions-row">
             <a class="btn btn-secondary" href="api/settings/archive/export" download="Gurux.Data.Relay.settings.json">Export all settings</a>
             <label>Import settings file <InputFile OnChange="SelectFileAsync" accept=".json,application/json" /></label>
@@ -49,38 +53,60 @@
         {
             <p>@_fileName — Client databases: @_archive.Client.Databases.Count; Server databases: @_archive.Server.Databases.Count; Data Vault databases: @_archive.DataVault.Databases.Count.</p>
             <p>Import replaces all current client, server and Data Vault settings.</p>
-            <button type="button" class="btn btn-primary" @onclick="ImportAsync">Import all settings</button>
+            <DatabaseImportMappingSelector SourceDatabases="_archive.Databases" TargetDatabases="_catalog" DatabaseMap="_databaseMap" DatabaseMapChanged="OnDatabaseMapChanged" />
+            <button type="button" class="btn btn-primary" @onclick="ImportAsync" disabled="@(!CanImport)">Import all settings</button>
             <button type="button" class="btn btn-secondary" @onclick="Clear">Cancel</button>
         }
     </fieldset>
-    @if (_busy)
-    {
-        <p role="status">Importing settings…</p>
-    }
-    @if (_message is not null)
-    {
-        <p role="status">@_message</p>
-    }
-    @if (_error is not null)
-    {
-        <p class="notice" role="alert">@_error</p>
-    }
+
+
 </section>
 
 @code {
+    private readonly string _notificationKey = Guid.NewGuid().ToString("N") + ":";
     [Parameter] public EventCallback OnImported { get; set; }
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
     };
+    private readonly List<GXDatabase> _catalog = [];
+    private readonly Dictionary<Guid, Guid> _databaseMap = [];
     private GXSettingsArchive? _archive;
-    private string? _json, _fileName, _error, _message;
-    private bool _busy;
-    private void Clear() { _archive = null; _json = null; _fileName = null; }
+    private string? _json, _fileName;
+
+    private bool CanImport
+    {
+        get
+        {
+            if (_archive is null || _json is null) return false;
+            if (_archive.Databases.Count == 0) return true;
+            if (_databaseMap.Count != _archive.Databases.Select(database => database.Id).Distinct().Count()) return false;
+            var targetIds = _databaseMap.Values.ToArray();
+            return targetIds.Length == targetIds.Distinct().Count() && targetIds.All(targetId => _catalog.Any(database => database.Id == targetId));
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _catalog.Clear();
+        _catalog.AddRange(await Api.GetDatabaseCatalogAsync(default));
+    }
+
+    private void Clear()
+    {
+        _archive = null;
+        _json = null;
+        _fileName = null;
+        _databaseMap.Clear();
+    }
+
     private async Task SelectFileAsync(InputFileChangeEventArgs args)
     {
+        NotificationService.RemoveByKey("Could not select file (settings archive)");
+
+        using var progress = Progress.ProgressStart("Reading settings file…");
         Clear();
-        _error = _message = null;
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         try
         {
             await using var stream = args.File.OpenReadStream(10 * 1024 * 1024);
@@ -88,29 +114,48 @@
             string json = await reader.ReadToEndAsync();
             var archive = JsonSerializer.Deserialize<GXSettingsArchive>(json, Options)
                 ?? throw new JsonException("The settings file must contain a JSON object.");
-            if (archive.FormatVersion != 1 || archive.Client?.Mode != ApplicationMode.Client ||
+            if (archive.FormatVersion != 2 || archive.Client?.Mode != ApplicationMode.Client ||
                 archive.Server?.Mode != ApplicationMode.Server || archive.DataVault?.Mode != ApplicationMode.DataVault ||
                 archive.Client.Databases is null || archive.Server.Databases is null || archive.DataVault.Databases is null)
-                throw new JsonException("Select a version 1 settings export containing client, server and datavault settings.");
+                throw new JsonException("Select a version 2 settings export containing client, server and datavault settings.");
             _archive = archive;
             _json = json;
             _fileName = args.File.Name;
+            InitializeDatabaseMap(archive.Databases, _catalog);
         }
-        catch (Exception ex) { _error = $"Could not read settings file: {ex.Message}"; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not select file (settings archive)"); }
     }
     private async Task ImportAsync()
     {
-        if (_busy || _json is null) return;
-        _busy = true;
-        _error = _message = null;
+        if (Progress.IsBusy || _json is null) return;
+        NotificationService.RemoveByKey("Could not import (settings archive)");
+
+        NotificationService.RemoveByKey(_notificationKey + "_error");
         try
         {
-            await Api.ImportAllSettingsAsync(_json, default);
+            await Api.ImportAllSettingsAsync(new GXSettingsImportRequest
+            {
+                Json = _json,
+                DatabaseMap = new Dictionary<Guid, Guid>(_databaseMap)
+            }, default);
             Clear();
-            _message = "Client, server and Data Vault settings imported.";
+            NotificationService.Add(new GXNotificationItem(NotificationLevel.Success, "Settings archive", "Client, server and Data Vault settings imported.", Closable: true));
             await OnImported.InvokeAsync();
         }
-        catch (Exception ex) { _error = $"Could not import settings: {ex.Message}"; }
-        finally { _busy = false; }
+        catch (Exception ex) { NotificationService.ReportError(ex, "Could not import (settings archive)"); }
     }
+
+    private void InitializeDatabaseMap(IReadOnlyList<GXDatabase> imported, IReadOnlyList<GXDatabase> targets, Dictionary<Guid, Guid> map)
+    {
+        map.Clear();
+        HashSet<Guid> used = [];
+        foreach (GXDatabase database in imported)
+            if (targets.Any(target => target.Id == database.Id) && used.Add(database.Id))
+                map[database.Id] = database.Id;
+    }
+
+    private void InitializeDatabaseMap(IReadOnlyList<GXDatabase> imported, IReadOnlyList<GXDatabase> targets)
+        => InitializeDatabaseMap(imported, targets, _databaseMap);
+
+    private Task OnDatabaseMapChanged(Dictionary<Guid, Guid> _) => Task.CompletedTask;
 }
