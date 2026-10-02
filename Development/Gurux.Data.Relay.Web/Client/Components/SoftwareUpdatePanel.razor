@@ -2,6 +2,8 @@
 @implements IDisposable
 @inject GXSoftwareUpdateClient Updates
 
+@if (!string.IsNullOrEmpty(Updates.Status.CurrentVersion) && Updates.Status.CurrentVersion != "0.0.1-local")
+{
 <section class="mb-4" aria-labelledby="software-update-heading">
     <h2 id="software-update-heading">Software update</h2>
     @if (!string.IsNullOrEmpty(Updates.Status.CurrentVersion))
@@ -33,6 +35,7 @@
         @(Progress.IsBusy ? "Checking…" : "Check for updates")
     </button>
 </section>
+}
 
 @code {
     private readonly CancellationTokenSource _stopping = new();

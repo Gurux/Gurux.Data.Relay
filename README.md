@@ -1,3 +1,53 @@
+## Database
+
+At the moment Gurux.Data.Relay is supporting the following databases:
+
+- [MySQL](http://www.mysql.com/)
+- [MariaDB](http://www.mariadb.com/)
+- [Microsoft SQL Server](http://www.microsoft.com/)
+- [Oracle](http://www.oracle.com/)
+- [PostgreSQL](https://www.postgresql.org/)
+- [SQLite](https://www.sqlite.org/)
+- [IBM Db2](https://www.ibm.com/products/db2)
+- [SAP HANA](https://www.sap.com/products/technology-platform/hana.html)
+
+## Docker
+
+Install [Docker Desktop](https://docs.docker.com/get-started/get-docker/) or Docker Engine and start Docker. On Windows, use Linux containers.
+
+The image is available on [Docker Hub](https://hub.docker.com/r/guruxorg/gurux-data-relay). Choose a published tag from the [Tags page](https://hub.docker.com/r/guruxorg/gurux-data-relay/tags) and replace `IMAGE_TAG` in both commands below with that tag.
+
+Download the image:
+
+```sh
+docker pull guruxorg/gurux-data-relay:IMAGE_TAG
+```
+
+Start Gurux.Data.Relay in the background:
+
+```sh
+docker run -d --name gurux-data-relay --restart unless-stopped -p 8080:8080 -v gurux-data-relay-data:/data guruxorg/gurux-data-relay:IMAGE_TAG
+```
+
+Open [http://localhost:8080](http://localhost:8080) in your browser. The `gurux-data-relay-data` volume stores the configuration settings and the default configuration database in `/data`, preserving them when the container is replaced.
+
+If you configure an incoming TCP transport, publish its listening port as well. For example, add `-p 5000:5000` to `docker run` when the transport listens on port `5000`.
+
+View the container logs:
+
+```sh
+docker logs -f gurux-data-relay
+```
+
+Stop the container or start it again with its existing settings:
+
+```sh
+docker stop gurux-data-relay
+docker start gurux-data-relay
+```
+
+See the Docker documentation for [pulling images](https://docs.docker.com/reference/cli/docker/image/pull/) and [running containers](https://docs.docker.com/reference/cli/docker/container/run/).
+
 ![Gurux Data Relay](images/data-relay.png)
 See An [Gurux](https://www.gurux.fi/ "Gurux") for an overview.
 

@@ -10,6 +10,57 @@ Introduction
 ===========================
 Gurux Data Relay transfers data from source databases to a receiving server over TCP or MQTT and can process it into a Data Vault warehouse. Use it to collect data from multiple sites or applications in one central database, integrate operational systems, or prepare data for reporting and analytics. The web interface lets you configure database connections, table mappings, transfer schedules, and Data Vault processing.
 
+## Database
+
+At the moment Gurux.Data.Relay is supporting the following databases:
+
+- [MySQL](http://www.mysql.com/)
+- [MariaDB](http://www.mariadb.com/)
+- [Microsoft SQL Server](http://www.microsoft.com/)
+- [Oracle](http://www.oracle.com/)
+- [PostgreSQL](https://www.postgresql.org/)
+- [SQLite](https://www.sqlite.org/)
+- [IBM Db2](https://www.ibm.com/products/db2)
+- [SAP HANA](https://www.sap.com/products/technology-platform/hana.html)
+
+## Docker
+
+Install [Docker Desktop](https://docs.docker.com/get-started/get-docker/) or Docker Engine and start Docker. On Windows, use Linux containers.
+
+The image is available on [Docker Hub](https://hub.docker.com/r/guruxorg/gurux-data-relay). Choose a published tag from the [Tags page](https://hub.docker.com/r/guruxorg/gurux-data-relay/tags) and replace `IMAGE_TAG` in both commands below with that tag.
+
+Download the image:
+
+```sh
+docker pull guruxorg/gurux-data-relay:IMAGE_TAG
+```
+
+Start Gurux.Data.Relay in the background:
+
+```sh
+docker run -d --name gurux-data-relay --restart unless-stopped -p 8080:8080 -v gurux-data-relay-data:/data guruxorg/gurux-data-relay:IMAGE_TAG
+```
+
+Open [http://localhost:8080](http://localhost:8080) in your browser. The `gurux-data-relay-data` volume stores the configuration settings and the default configuration database in `/data`, preserving them when the container is replaced.
+
+If you configure an incoming TCP transport, publish its listening port as well. For example, add `-p 5000:5000` to `docker run` when the transport listens on port `5000`.
+
+View the container logs:
+
+```sh
+docker logs -f gurux-data-relay
+```
+
+Stop the container or start it again with its existing settings:
+
+```sh
+docker stop gurux-data-relay
+docker start gurux-data-relay
+```
+
+See the Docker documentation for [pulling images](https://docs.docker.com/reference/cli/docker/image/pull/) and [running containers](https://docs.docker.com/reference/cli/docker/container/run/).
+
+
 Quick start
 =========================== 
 Configure the receiving Server first, then connect the Client and send the source database schema.
@@ -475,7 +526,7 @@ The exact MCP transport depends on how Gurux Data Relay is deployed.
 For a server installation, configure the agent to connect to the Gurux Data Relay MCP endpoint, for example:
 
 ```text
-https://localhost:5001/mcp
+http://localhost:8080/mcp
 ```
 
 ## Visual Studio Code
@@ -495,7 +546,7 @@ For a remote Gurux Data Relay MCP server:
   "servers": {
     "gurux-data-relay": {
       "type": "http",
-      "url": "http://localhost:5018/mcp"
+      "url": "http://localhost:8080/mcp"
     }
   }
 }
@@ -567,7 +618,7 @@ Claude Code can connect directly to MCP servers.
 For a remote HTTP MCP server, configure the Gurux Data Relay MCP endpoint using the MCP options supported by your installed Claude Code version:
 
 ```text
-http://localhost:5018/mcp
+http://localhost:8080/mcp
 ```
 
 Use:
